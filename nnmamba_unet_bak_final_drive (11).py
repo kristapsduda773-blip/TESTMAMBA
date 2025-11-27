@@ -24,14 +24,29 @@ Original file is located at
 
 # !mamba install -y python=3.11
 
-import sys, os; print(sys.version, sys.executable)
-import sys; print(sys.version, sys.executable)  # 3.11 + /usr/local/bin/python
+import argparse
+import importlib
+import os
+import subprocess
+import sys
+
+print(sys.version, sys.executable)
+print(sys.version, sys.executable)  # 3.11 + /usr/local/bin/python
 import torch; print('OK torch', torch.__version__)
 
 """## 1.Bibliotēku imports"""
 
-from google.colab import drive
-drive.mount('/content/drive')
+try:
+    from google.colab import drive
+    IN_COLAB = True
+except ImportError:
+    drive = None
+    IN_COLAB = False
+
+if IN_COLAB:
+    drive.mount('/content/drive')
+else:
+    print("google.colab not available; skipping drive.mount().")
 
 # !pip uninstall -y tensorflow
 # !pip install tensorflow==2.12.0
@@ -41,9 +56,22 @@ drive.mount('/content/drive')
 
 # %pip -q install condacolab
 
-import sys, os; print(sys.version, sys.executable)
-!pip install tensorflow
-!pip install nibabel
+def ensure_package(package_name, import_name=None):
+    """
+    Import a package if available; install it via pip otherwise.
+    Keeps the script runnable when invoked outside an interactive notebook.
+    """
+    module_name = import_name or package_name
+    try:
+        importlib.import_module(module_name)
+        return
+    except ImportError:
+        print(f"Installing missing dependency: {package_name}")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", package_name])
+
+
+for dependency in ("tensorflow", "nibabel", "patchify"):
+    ensure_package(dependency)
 # %pip install --index-url https://download.pytorch.org/whl/cu118 torch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2
 # %pip install -U causal-conv1d==1.5.2 mamba-ssm==2.2.2
 
@@ -54,8 +82,6 @@ import keras
 print("NumPy version:", np.__version__)
 print("TensorFlow version:", tf.__version__)
 print("Keras version:", keras.__version__)
-
-!pip install patchify
 
 # !pip install --upgrade pip wheel setuptools ninja
 # !pip install --extra-index-url https://huggingface.github.io/mamba-ssm/whl/cu121/ \
@@ -1665,15 +1691,19 @@ class UNet3DMamba(nn.Module):
         return logits
 
 # -------------------------
-# Quick smoke test (uncomment to run)
+# Quick smoke test helper
 # -------------------------
-if __name__ == "__main__":
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = UNet3DMamba(in_channels=4, num_classes=6, base_filters=16).to(device)  # smaller base_filters for test
-    x = torch.randn(1, 4, 8, 128, 128, device=device)  # (N, C, D, H, W)
+def run_smoke_test(device_str=None):
+    """
+    Build the network and run a single forward pass to verify tensor shapes.
+    Helps catch CUDA/shape issues before launching the full training job.
+    """
+    device = torch.device(device_str or ("cuda" if torch.cuda.is_available() else "cpu"))
+    model = UNet3DMamba(in_channels=4, num_classes=6, base_filters=16).to(device)
+    x = torch.randn(1, 4, 8, 128, 128, device=device)
     with torch.no_grad():
         y = model(x)
-    print("Input:", x.shape, "Output:", y.shape)
+    print(f"Smoke test on {device}: input {x.shape} -> output {y.shape}")
 
 # # PyTorch 3D U-Net with Tri-Oriented Mamba SSM blocks (trainable)
 
@@ -3219,3 +3249,52 @@ def fit_pytorch_mamba(train_gen, val_gen, num_epochs=10000, patience=30, base_lr
         model.load_state_dict(best_state)
 
     return model, history
+
+
+def parse_cli_args():
+    parser = argparse.ArgumentParser(description="Train or smoke-test the Tri-Oriented Mamba U-Net.")
+    parser.add_argument("--mode", choices=("train", "smoke"), default="train",
+                        help="Run full training or the lightweight smoke test.")
+    parser.add_argument("--epochs", type=int, default=epochs, help="Maximum number of training epochs.")
+    parser.add_argument("--patience", type=int, default=patience, help="Early stopping patience.")
+    parser.add_argument("--base-lr", dest="base_lr", type=float, default=initial_lr,
+                        help="Lower bound for the cyclic learning rate.")
+    parser.add_argument("--max-lr", dest="max_lr", type=float, default=max_lr,
+                        help="Upper bound for the cyclic learning rate.")
+    parser.add_argument("--step-size", dest="step_size", type=int, default=step_size,
+                        help="Half-cycle length for the CLR scheduler.")
+    parser.add_argument("--device", type=str, default=None,
+                        help="Torch device string override, e.g. cuda:0 or cpu.")
+    return parser.parse_args()
+
+
+def main():
+    args = parse_cli_args()
+
+    if args.mode == "smoke":
+        run_smoke_test(device_str=args.device)
+        return
+
+    model, history = fit_pytorch_mamba(
+        train_gen=train_gen,
+        val_gen=val_gen,
+        num_epochs=args.epochs,
+        patience=args.patience,
+        base_lr=args.base_lr,
+        max_lr=args.max_lr,
+        step_size=args.step_size,
+        save_dir=CHECKPOINT_DIR,
+        class_weights_list=CLASS_WEIGHT_TUPLE,
+        device_str=args.device,
+    )
+
+    val_history = history.get('val_loss', [])
+    best_val = min(val_history) if val_history else None
+    if best_val is not None:
+        print(f"Training complete. Best validation loss: {best_val:.4f}")
+    else:
+        print("Training complete.")
+
+
+if __name__ == "__main__":
+    main()
