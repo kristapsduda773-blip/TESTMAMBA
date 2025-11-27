@@ -562,7 +562,6 @@ class PatchGenerator(tf.keras.utils.Sequence):
         self.step_size = step_size
         self.threshold = threshold
 
-        self.current_patient_idx = 0  # Tracks progress through patients
         self.patch_voxels = np.prod(self.patch_size[:3])
 
     def __len__(self):
@@ -574,7 +573,7 @@ class PatchGenerator(tf.keras.utils.Sequence):
 
 
     def __getitem__(self, index):
-        patient_idx = self.current_patient_idx
+        patient_idx = index % len(self.image_files)
         retries = 0
         max_retries_per_patient = 100
 
@@ -603,17 +602,16 @@ class PatchGenerator(tf.keras.utils.Sequence):
                 #     plt.title(f"Patch {i} Mask (slice {mid_slice})")
                 #     plt.axis('off')
                 #     plt.show()
-
-
-                self.current_patient_idx = (patient_idx + 1) % len(self.image_files)
+                # advance to next patient index deterministically
+                patient_idx = (patient_idx + 1) % len(self.image_files)
                 gc.collect()
                 return batch_img, batch_mask
             else:
                 print("generating again")
                 retries += 1
+                patient_idx = (patient_idx + 1) % len(self.image_files)
 
-
-
+        raise RuntimeError("Unable to generate a non-empty patch batch after multiple retries.")
     # def on_epoch_end(self):
     #   if self.shuffle:
     #     np.random.shuffle(self.indices)
@@ -823,8 +821,10 @@ Patch-based class weights: [0.168, 931.755, 71.288, 249.718, 275.719, 136.199]
 """
 
 wt0, wt1, wt2, wt3, wt4, wt5 = 0.168, 902.026, 68.417, 238.930, 267.165, 130.448
+CLASS_WEIGHT_VALUES = [wt0, wt1, wt2, wt3, wt4, wt5]
+CLASS_WEIGHT_TUPLE = tuple(CLASS_WEIGHT_VALUES)
 
-class_weights = tf.constant([wt0, wt1, wt2, wt3, wt4, wt5], dtype=tf.float32)
+class_weights = tf.constant(CLASS_WEIGHT_VALUES, dtype=tf.float32)
 
 print(class_weights)
 
@@ -2201,6 +2201,10 @@ def weighted_cce_metric_wrapper(class_weights):
         return weighted_cce_metric(y_true, y_pred, class_weights)
     return metric
 
+"""
+Legacy TorchModel-based training loop retained for reference only.
+Use fit_pytorch_mamba(...) defined later for the maintained PyTorch path.
+
 pytorch_model = UNet3DMamba(
     in_channels=4,
     num_classes=6,
@@ -2216,9 +2220,6 @@ model.compile(
     metrics=[dice_metric, 'accuracy', weighted_cce_metric_wrapper]
 )
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-lambda x: self.mamba_forward(torch.from_numpy(np.array(x)).float().to(device)).detach().cpu().numpy()
-
 # history = model.fit(
 #     train_gen,
 #     epochs=epochs,
@@ -2226,51 +2227,13 @@ lambda x: self.mamba_forward(torch.from_numpy(np.array(x)).float().to(device)).d
 #     #callbacks=callbacks_list
 # )
 
-from torch.utils.data import Dataset, DataLoader
-class TorchPatchDataset(Dataset):
-    def __init__(self, tf_gen):
-        self.tf_gen = tf_gen
-
-    def __len__(self):
-        return len(self.tf_gen)
-
-    def __getitem__(self, index):
-        imgs, masks = self.tf_gen[index]   # (P, H, W, D, C)
-
-        # convert P patches into batch dimension
-        # resulting shape: (P, C, D, H, W)
-        imgs = torch.from_numpy(imgs).permute(0, 4, 3, 1, 2).contiguous()
-        masks = torch.from_numpy(masks).permute(0, 4, 3, 1, 2).contiguous()
-
-        return imgs.float(), masks.float()
-
-train_dataset = TorchPatchDataset(train_gen)
-val_dataset   = TorchPatchDataset(val_gen)
-test_dataset  = TorchPatchDataset(test_gen)
-
-train_loader = DataLoader(train_dataset, batch_size=1, shuffle=False)
-val_loader   = DataLoader(val_dataset, batch_size=1, shuffle=False)
-test_loader  = DataLoader(test_dataset, batch_size=1, shuffle=False)
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model = UNet3DMamba().to(device)
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
-criterion = torch.nn.CrossEntropyLoss()   # or your Dice loss rewritten
-
-for epoch in range(epochs):
-    model.train()
-    for imgs, masks in train_loader:
-
-        imgs  = imgs.squeeze(0).to(device)   # (P, 4, 8, 256, 256)
-        masks = masks.squeeze(0).to(device)  # (P, 6, 8, 256, 256)
-
-        optimizer.zero_grad()
-
-        outputs = model(imgs)   # (P, 6, 8, 256, 256)
-
-        loss = criterion(outputs, masks.argmax(1))
-        loss.backward()
-        optimizer.step()
+# from torch.utils.data import Dataset, DataLoader
+# class TorchPatchDataset(Dataset):
+#     ...
+#
+# for epoch in range(epochs):
+#     ...
+"""
 
 """### save model"""
 
@@ -3003,55 +2966,74 @@ def ensure_dir(path: str):
 #         logits = self.out_conv(u)
 #         return logits
 
-# # PyTorch losses: GDL, WCE, Combined; metrics; utility
-# import torch
-# import torch.nn as nn
-# import torch.nn.functional as F
-
-# def generalized_dice_loss_pt(y_true_onehot: torch.Tensor, y_pred_logits: torch.Tensor, class_weights: torch.Tensor, epsilon: float = 1e-7):
-#     # y_true_onehot: (N, C, D, H, W); y_pred_logits: (N, C, D, H, W)
-#     probs = F.softmax(y_pred_logits, dim=1)
-#     y_true = y_true_onehot.float()
-#     n = y_true.shape[0]
-#     # flatten spatial dims
-#     y_true_flat = y_true.view(n, y_true.shape[1], -1)
-#     y_pred_flat = probs.view(n, probs.shape[1], -1)
-
-#     intersection = (y_true_flat * y_pred_flat).sum(dim=2)  # (N, C)
-#     union = (y_true_flat + y_pred_flat).sum(dim=2)         # (N, C)
-
-#     weighted_intersection = (class_weights * intersection).sum(dim=1)  # (N)
-#     weighted_union = (class_weights * union).sum(dim=1)                # (N)
-
-#     dice = (2.0 * weighted_intersection + epsilon) / (weighted_union + epsilon)
-#     loss = 1.0 - dice.mean()
-#     return loss
+import torch
+import torch.nn.functional as F
 
 
-# def weighted_cce_pt(y_true_onehot: torch.Tensor, y_pred_logits: torch.Tensor, class_weights: torch.Tensor, epsilon: float = 1e-7):
-#     # Stable softmax + log
-#     log_probs = F.log_softmax(y_pred_logits, dim=1)
-#     weighted_log_probs = (class_weights.view(1, -1, 1, 1, 1) * y_true_onehot) * log_probs
-#     loss = -weighted_log_probs.sum(dim=1).mean()
-#     return loss
+def generalized_dice_loss_pt(
+    y_true_onehot: torch.Tensor,
+    y_pred_logits: torch.Tensor,
+    class_weights: torch.Tensor,
+    epsilon: float = 1e-7,
+) -> torch.Tensor:
+    """Generalized Dice Loss for channel-first tensors (N, C, D, H, W)."""
+    probs = F.softmax(y_pred_logits, dim=1)
+    y_true = y_true_onehot.float()
+    n = y_true.shape[0]
+    y_true_flat = y_true.view(n, y_true.shape[1], -1)
+    y_pred_flat = probs.view(n, probs.shape[1], -1)
+
+    intersection = (y_true_flat * y_pred_flat).sum(dim=2)
+    union = (y_true_flat + y_pred_flat).sum(dim=2)
+
+    weighted_intersection = (class_weights * intersection).sum(dim=1)
+    weighted_union = (class_weights * union).sum(dim=1)
+
+    dice = (2.0 * weighted_intersection + epsilon) / (weighted_union + epsilon)
+    return 1.0 - dice.mean()
 
 
-# def combined_loss_pt(y_true_onehot: torch.Tensor, y_pred_logits: torch.Tensor, class_weights: torch.Tensor, alpha: float = 0.7):
-#     gdl = generalized_dice_loss_pt(y_true_onehot, y_pred_logits, class_weights)
-#     wce = weighted_cce_pt(y_true_onehot, y_pred_logits, class_weights)
-#     return alpha * gdl + (1.0 - alpha) * wce
+def weighted_cce_pt(
+    y_true_onehot: torch.Tensor,
+    y_pred_logits: torch.Tensor,
+    class_weights: torch.Tensor,
+    epsilon: float = 1e-7,
+) -> torch.Tensor:
+    """Weighted categorical cross-entropy on logits."""
+    log_probs = F.log_softmax(y_pred_logits, dim=1)
+    weights = class_weights.view(1, -1, 1, 1, 1)
+    weighted_log_probs = weights * y_true_onehot * log_probs
+    return -weighted_log_probs.sum(dim=1).mean()
 
 
-# def dice_metric_pt(y_true_onehot: torch.Tensor, y_pred_logits: torch.Tensor, class_weights: torch.Tensor, epsilon: float = 1e-7):
-#     probs = F.softmax(y_pred_logits, dim=1)
-#     n = y_true_onehot.shape[0]
-#     y_true_flat = y_true_onehot.view(n, y_true_onehot.shape[1], -1)
-#     y_pred_flat = probs.view(n, probs.shape[1], -1)
-#     intersection = (y_true_flat * y_pred_flat).sum(dim=2)
-#     union = (y_true_flat + y_pred_flat).sum(dim=2)
-#     dice_per_class = (2.0 * intersection + epsilon) / (union + epsilon)
-#     weighted = (class_weights * dice_per_class).sum(dim=1) / class_weights.sum()
-#     return weighted.mean()
+def combined_loss_pt(
+    y_true_onehot: torch.Tensor,
+    y_pred_logits: torch.Tensor,
+    class_weights: torch.Tensor,
+    alpha: float = 0.7,
+) -> torch.Tensor:
+    """Blend generalized Dice and weighted CCE losses."""
+    gdl = generalized_dice_loss_pt(y_true_onehot, y_pred_logits, class_weights)
+    wce = weighted_cce_pt(y_true_onehot, y_pred_logits, class_weights)
+    return alpha * gdl + (1.0 - alpha) * wce
+
+
+def dice_metric_pt(
+    y_true_onehot: torch.Tensor,
+    y_pred_logits: torch.Tensor,
+    class_weights: torch.Tensor,
+    epsilon: float = 1e-7,
+) -> torch.Tensor:
+    """Weighted Dice score (higher is better)."""
+    probs = F.softmax(y_pred_logits, dim=1)
+    n = y_true_onehot.shape[0]
+    y_true_flat = y_true_onehot.view(n, y_true_onehot.shape[1], -1)
+    y_pred_flat = probs.view(n, probs.shape[1], -1)
+    intersection = (y_true_flat * y_pred_flat).sum(dim=2)
+    union = (y_true_flat + y_pred_flat).sum(dim=2)
+    dice_per_class = (2.0 * intersection + epsilon) / (union + epsilon)
+    weighted = (class_weights * dice_per_class).sum(dim=1) / class_weights.sum()
+    return weighted.mean()
 
 # PyTorch Cyclic LR (triangular) and optimizer setup
 from torch.optim import SGD
@@ -3093,21 +3075,44 @@ class GeneratorWrapperDataset(Dataset):
     def __getitem__(self, idx):
         imgs, masks = self.gen[idx]  # imgs: (B_patches, H, W, D, C), masks: (B_patches, H, W, D, 6)
         # Collapse TF batch dimension: treat each patch as separate sample
-        x = torch.from_numpy(imgs).permute(0, 4, 2, 0, 1).contiguous()  # (N, C, D, H, W)
-        y = torch.from_numpy(masks).permute(0, 4, 2, 0, 1).contiguous()  # (N, 6, D, H, W)
+        x = torch.from_numpy(imgs).permute(0, 4, 3, 1, 2).contiguous()  # (N, C, D, H, W)
+        y = torch.from_numpy(masks).permute(0, 4, 3, 1, 2).contiguous()  # (N, 6, D, H, W)
         return x.float(), y.float()
 
 
 def build_dataloaders(train_gen, val_gen, batch_size=1, num_workers=2):
     train_ds = GeneratorWrapperDataset(train_gen)
     val_ds = GeneratorWrapperDataset(val_gen)
-    train_loader = DataLoader(train_ds, batch_size=None, shuffle=False, num_workers=0)
-    val_loader = DataLoader(val_ds, batch_size=None, shuffle=False, num_workers=0)
+
+    def collate_fn(batch):
+        xs, ys = zip(*batch)
+        x = torch.cat(xs, dim=0)
+        y = torch.cat(ys, dim=0)
+        return x, y
+
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        collate_fn=collate_fn,
+    )
+    val_loader = DataLoader(
+        val_ds,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        collate_fn=collate_fn,
+    )
     return train_loader, val_loader
 
 # PyTorch training loop with CLR and early stopping
 import time
 import copy
+
+
+def ensure_dir(path: str):
+    os.makedirs(path, exist_ok=True)
 
 
 
@@ -3159,7 +3164,7 @@ def eval_epoch(model, loader, device, class_weights):
 
 def fit_pytorch_mamba(train_gen, val_gen, num_epochs=10000, patience=30, base_lr=1e-5, max_lr=1e-2, step_size=670,
                       save_dir='/content/drive/MyDrive/Unet_checkpoints', save_name='best_model_mamba_pytorch.pt',
-                      class_weights_list=(0.168, 902.026, 68.417, 238.930, 267.165, 130.448), device_str=None):
+                      class_weights_list=CLASS_WEIGHT_TUPLE, device_str=None):
     ensure_dir(save_dir)
     device = torch.device(device_str or ('cuda' if torch.cuda.is_available() else 'cpu'))
 
