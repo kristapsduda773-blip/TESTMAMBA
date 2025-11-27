@@ -7,45 +7,41 @@ Original file is located at
     https://colab.research.google.com/drive/19EuYM3EY4pTX4dVUybxwGdKkDlF8YqcR
 """
 
-# !pip install --upgrade pip
+import os
+import sys
+import subprocess
 
-# # Install PyTorch CUDA 11.8 build
-# !pip install --index-url https://download.pytorch.org/whl/cu118 torch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2
+try:
+    from google.colab import drive  # type: ignore
+    IN_COLAB = True
+except ImportError:
+    drive = None
+    IN_COLAB = False
 
-# # Required for Mamba SSM
-# !pip install ninja
+AUTO_INSTALL_DEPS = os.environ.get("AUTO_INSTALL_DEPS", "1") == "1"
 
-# # Install causal-conv1d and Mamba-SSM from HuggingFace wheels
-# !pip install causal-conv1d==1.5.2 --no-build-isolation --extra-index-url https://huggingface.github.io/mamba-ssm/whl/cu118/
-# !pip install mamba-ssm==2.2.2 --extra-index-url https://huggingface.github.io/mamba-ssm/whl/cu118/
 
-# !pip install -U --no-deps /content/FILENAME.whl
-# !pip install -U causal-conv1d==1.5.2  # or the matching wheel if provided
+def _maybe_mount_drive(mount_point: str = "/content/drive") -> None:
+    if not IN_COLAB:
+        return
+    try:
+        drive.mount(mount_point)
+    except RuntimeError:
+        # Already mounted in this session.
+        pass
 
-# !mamba install -y python=3.11
 
-import sys, os; print(sys.version, sys.executable)
-import sys; print(sys.version, sys.executable)  # 3.11 + /usr/local/bin/python
-import torch; print('OK torch', torch.__version__)
+def _pip_install_if_needed(packages) -> None:
+    if not (IN_COLAB and AUTO_INSTALL_DEPS):
+        return
+    for package in packages:
+        subprocess.run([sys.executable, "-m", "pip", "install", package], check=True)
+
+
+_maybe_mount_drive()
+_pip_install_if_needed(["tensorflow", "nibabel", "patchify"])
 
 """## 1.Bibliotēku imports"""
-
-from google.colab import drive
-drive.mount('/content/drive')
-
-# !pip uninstall -y tensorflow
-# !pip install tensorflow==2.12.0
-# !pip install mamba_ssm
-
-# !pip install patchify nibabel
-
-# %pip -q install condacolab
-
-import sys, os; print(sys.version, sys.executable)
-!pip install tensorflow
-!pip install nibabel
-# %pip install --index-url https://download.pytorch.org/whl/cu118 torch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2
-# %pip install -U causal-conv1d==1.5.2 mamba-ssm==2.2.2
 
 import numpy as np
 import tensorflow as tf
@@ -54,12 +50,6 @@ import keras
 print("NumPy version:", np.__version__)
 print("TensorFlow version:", tf.__version__)
 print("Keras version:", keras.__version__)
-
-!pip install patchify
-
-# !pip install --upgrade pip wheel setuptools ninja
-# !pip install --extra-index-url https://huggingface.github.io/mamba-ssm/whl/cu121/ \
-#     mamba-ssm==2.2.2 causal-conv1d==1.5.2 --only-binary=:all:
 
 from tensorflow.keras import backend as K
 from tensorflow.keras.utils import normalize, to_categorical
@@ -81,20 +71,35 @@ import gc
 
 """## 2 Ceļi un hiperparametri"""
 
-# Bāzes direktorija
-dataset_path =  "/content/drive/Othercomputers/My Laptop/BHSD/SPLIT/segmentation"
+# Bāzes direktorija (override with SEG_DATASET_PATH env var if needed)
+DEFAULT_DATASET_ROOT = "/content/drive/Othercomputers/My Laptop/BHSD/SPLIT/segmentation"
+DEFAULT_CHECKPOINT_DIR = "/content/drive/MyDrive/Unet_checkpoints"
+
+
+def _resolve_path(env_name: str, default_path: str, ensure_exists: bool = False, create: bool = False) -> str:
+    path = os.environ.get(env_name, default_path)
+    path = os.path.abspath(path)
+    if create:
+        os.makedirs(path, exist_ok=True)
+    elif ensure_exists and not os.path.isdir(path):
+        raise FileNotFoundError(
+            f"Required directory '{path}' not found. Set {env_name} to a valid path."
+        )
+    return path
+
+
+DATASET_ROOT = _resolve_path("SEG_DATASET_PATH", DEFAULT_DATASET_ROOT, ensure_exists=True)
 
 # dati segmentācijai sadalīti 70% treniņa 15% validācijas un 15% testa
 # Segmentācijas datu ceļi
-SEG_TRAIN_IMG = os.path.join(dataset_path, "train_images")
-SEG_TRAIN_MASK = os.path.join(dataset_path, "train_masks")
-SEG_VAL_IMG   = os.path.join(dataset_path, "val_images")
-SEG_VAL_MASK  = os.path.join(dataset_path, "val_masks")
-SEG_TEST_IMG  = os.path.join(dataset_path, "test_images")
-SEG_TEST_MASK = os.path.join(dataset_path, "test_masks")
+SEG_TRAIN_IMG = os.path.join(DATASET_ROOT, "train_images")
+SEG_TRAIN_MASK = os.path.join(DATASET_ROOT, "train_masks")
+SEG_VAL_IMG   = os.path.join(DATASET_ROOT, "val_images")
+SEG_VAL_MASK  = os.path.join(DATASET_ROOT, "val_masks")
+SEG_TEST_IMG  = os.path.join(DATASET_ROOT, "test_images")
+SEG_TEST_MASK = os.path.join(DATASET_ROOT, "test_masks")
 
-CHECKPOINT_DIR = '/content/drive/MyDrive/Unet_checkpoints'
-os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+CHECKPOINT_DIR = _resolve_path("SEG_CHECKPOINT_DIR", DEFAULT_CHECKPOINT_DIR, create=True)
 
 MODEL_SAVE_PATH = os.path.join(CHECKPOINT_DIR, "best_model_dice_Mamba1000.keras")
 MODEL_CONTINUE_PATH = os.path.join(CHECKPOINT_DIR, "continued_model_Mamba1000.keras")
@@ -924,35 +929,41 @@ def combined_loss(class_weights, alpha=0.7):
 
 """### datu ielāde"""
 
-max_patients=100
-train_gen = PatchGenerator(SEG_TRAIN_IMG, SEG_TRAIN_MASK,
-                           batch_size=batch_size,
-                           max_patients=max_patients,
-                           augment=True,
-                           shuffle=False)
+max_patients = 100
 
-val_gen = PatchGenerator(SEG_VAL_IMG, SEG_VAL_MASK,
-                         batch_size=batch_size,
-                         max_patients=max_patients,
-                         augment=False,
-                         shuffle=False)
 
-test_gen = PatchGenerator(SEG_TEST_IMG, SEG_TEST_MASK,
-                          batch_size=batch_size,
-                          max_patients=max_patients,
-                          augment=False,
-                          shuffle=False)
+def build_patch_generators(max_patients: int = max_patients,
+                           augment_train: bool = True,
+                           shuffle: bool = False):
+    """Create train/val/test PatchGenerator instances on demand."""
+    train_gen = PatchGenerator(
+        SEG_TRAIN_IMG,
+        SEG_TRAIN_MASK,
+        batch_size=batch_size,
+        max_patients=max_patients,
+        augment=augment_train,
+        shuffle=shuffle
+    )
 
-# train_gen.image_files = train_gen.image_files[:2]
-# train_gen.mask_files  = train_gen.mask_files[:2]
-# train_gen.indices = np.arange(len(train_gen.image_files))
+    val_gen = PatchGenerator(
+        SEG_VAL_IMG,
+        SEG_VAL_MASK,
+        batch_size=batch_size,
+        max_patients=max_patients,
+        augment=False,
+        shuffle=shuffle
+    )
 
-# val_gen.image_files = val_gen.image_files[:2]
-# val_gen.mask_files  = val_gen.mask_files[:2]
-# val_gen.indices = np.arange(len(val_gen.image_files))
+    test_gen = PatchGenerator(
+        SEG_TEST_IMG,
+        SEG_TEST_MASK,
+        batch_size=batch_size,
+        max_patients=max_patients,
+        augment=False,
+        shuffle=shuffle
+    )
 
-steps_per_epoch = len(train_gen)
-val_steps_per_epoch = len(val_gen)
+    return train_gen, val_gen, test_gen
 
 """### kanālu standartizācija"""
 
@@ -1408,29 +1419,23 @@ class VisualizeTrainPredictions(tf.keras.callbacks.Callback):
         plt.suptitle(f"Training Predictions at Epoch {epoch+1}")
         plt.show()
 
-early_stopping = EarlyStopping(monitor = 'val_loss', patience=patience, restore_best_weights=True)
-history_saving_callback = HistorySavingCallback(filepath=history_filepath)
-vis_callback = VisualizePredictions(val_gen)
-train_vis_callback = VisualizeTrainPredictions(train_gen)
-lr_logger = LearningRateLogger()
-callbacks_list = [early_stopping,
-                  checkpoint_combined_loss,
-                  history_saving_callback,
-                  train_vis_callback,
-                  vis_callback,
-                  lr_logger,
-                  TqdmCallback(verbose=1)
-                  ]
-
-
-# Verify configuration
-print(f"Total training patients: {len(train_gen.image_files)}")
-print(f"Total validation patients: {len(val_gen.image_files)}")
-print(f"Steps per epoch: {len(train_gen)}")
+def build_tf_callbacks(train_gen, val_gen):
+    early_stopping = EarlyStopping(monitor='val_loss', patience=patience, restore_best_weights=True)
+    history_saving_callback = HistorySavingCallback(filepath=history_filepath)
+    vis_callback = VisualizePredictions(val_gen)
+    train_vis_callback = VisualizeTrainPredictions(train_gen)
+    lr_logger = LearningRateLogger()
+    return [
+        early_stopping,
+        checkpoint_combined_loss,
+        history_saving_callback,
+        train_vis_callback,
+        vis_callback,
+        lr_logger,
+        TqdmCallback(verbose=1)
+    ]
 
 """### train model"""
-
-print(torch.cuda.is_available())
 
 # Fixed PyTorch 3D U-Net with Tri-Oriented Internal Mamba (no external deps)
 import os
@@ -3219,3 +3224,45 @@ def fit_pytorch_mamba(train_gen, val_gen, num_epochs=10000, patience=30, base_lr
         model.load_state_dict(best_state)
 
     return model, history
+
+
+def _get_int_env(var_name: str, default: int) -> int:
+    raw = os.environ.get(var_name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        print(f"Invalid value '{raw}' for {var_name}; falling back to {default}.")
+        return default
+
+
+def main():
+    backend = os.environ.get("TRAIN_BACKEND", "pytorch").lower()
+    effective_max_patients = _get_int_env("SEG_MAX_PATIENTS", max_patients)
+    train_gen, val_gen, test_gen = build_patch_generators(max_patients=effective_max_patients)
+
+    print(f"Total training patients: {len(train_gen.image_files)}")
+    print(f"Total validation patients: {len(val_gen.image_files)}")
+    print(f"Steps per epoch: {len(train_gen)}")
+    print(f"Selected backend: {backend}")
+
+    if backend != "pytorch":
+        print("TensorFlow training pipeline is not wired in this script. Set TRAIN_BACKEND=pytorch to run PyTorch training.")
+        return
+
+    print(f"Starting PyTorch training. CUDA available: {torch.cuda.is_available()}")
+    fit_pytorch_mamba(
+        train_gen,
+        val_gen,
+        num_epochs=epochs,
+        patience=patience,
+        base_lr=initial_lr,
+        max_lr=max_lr,
+        step_size=step_size,
+        save_dir=CHECKPOINT_DIR
+    )
+
+
+if __name__ == "__main__":
+    main()
