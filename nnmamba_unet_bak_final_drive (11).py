@@ -1665,12 +1665,6 @@ class UNet3DMamba(nn.Module):
         return logits
 
 # -------------------------
-# Utility
-# -------------------------
-def _ensure_dir(path: str):
-    os.makedirs(path, exist_ok=True)
-
-# -------------------------
 # Quick smoke test (uncomment to run)
 # -------------------------
 if __name__ == "__main__":
@@ -2735,13 +2729,6 @@ plt.show()
 """# generated:"""
 
 # PyTorch 3D U-Net with Tri-Oriented Mamba SSM blocks (trainable)
-
-
-
-def _ensure_dir(path: str):
-	os.makedirs(path, exist_ok=True)
-
-
 # class TriOrientedMambaBlock_NoExt(TriOrientedMambaBlock_NoExt):
 # 	def __init__(self, channels: int, ssm_dim: int, dropout_rate: float = 0.1):
 # 		super().__init__()
