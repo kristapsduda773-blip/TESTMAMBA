@@ -559,12 +559,11 @@ class PatchGenerator(tf.keras.utils.Sequence):
         self.augment = augment
         self.indices = np.arange(len(self.image_files))
         self.on_epoch_end()
-        self.all_patches = []
         self.step_size = step_size
         self.threshold = threshold
 
         self.current_patient_idx = 0  # Tracks progress through patients
-        self.buffer = []  # Holds leftover patches across patients
+        self.patch_voxels = np.prod(self.patch_size[:3])
 
     def __len__(self):
           """Return the number of batches per epoch.
@@ -578,13 +577,12 @@ class PatchGenerator(tf.keras.utils.Sequence):
         patient_idx = self.current_patient_idx
         retries = 0
         max_retries_per_patient = 100
-        total_attempts = 0
 
         while retries < max_retries_per_patient:
-            patches = self.process_single_volume(patient_idx)
-            if patches and len(patches) > 0:
-                batch_img = np.array([p[0] for p in patches])
-                batch_mask = np.array([p[1] for p in patches])
+            patches_img, patches_mask = self.process_single_volume(patient_idx)
+            if patches_img is not None and patches_mask is not None:
+                batch_img = patches_img.astype(np.float32, copy=False)
+                batch_mask = patches_mask.astype(np.float32, copy=False)
 
                 # for i, patch in enumerate(batch_img):
                 #     plt.figure(figsize=(15, 4))
@@ -623,16 +621,16 @@ class PatchGenerator(tf.keras.utils.Sequence):
 ###### shuffling ???????????????????????
 
     def process_single_volume(self, idx):
-        # Load full image and mask volumes
-        img = nib.load(self.image_files[idx]).get_fdata()
-        mask = nib.load(self.mask_files[idx]).get_fdata().astype(np.uint8)
+        filename = os.path.basename(self.image_files[idx])
+        # Load full image and mask volumes (float32 to avoid double memory usage)
+        img = nib.load(self.image_files[idx], mmap=True).get_fdata(dtype=np.float32)
+        mask = nib.load(self.mask_files[idx], mmap=True).get_fdata().astype(np.uint8)
 
 
         # Apply CT window standardization (multi-channel input)
         # Resulting shape: (H, W , D_full, len(windows))
 
-        img = standardize_windows(img, windows)
-        img = normalize_image(img)
+        img = normalize_image(standardize_windows(img, windows)).astype(np.float32, copy=False)
 
         # tf.debugging.check_numerics(img, message="After standardize_windows, found NaNs")
         # if img.size == 0:
@@ -644,8 +642,8 @@ class PatchGenerator(tf.keras.utils.Sequence):
 
 
         # One-hot encode mask for 6 classes and remove background channel
-        # Resulting shape: (H, W, D_full, 5)
-        mask = tf.one_hot(mask, depth=classes).numpy()
+        # Resulting shape: (H, W, D_full, 6)
+        mask = tf.one_hot(mask, depth=classes, dtype=tf.float32).numpy()
 
 
         # ---- Random Augmentation ----
@@ -659,8 +657,20 @@ class PatchGenerator(tf.keras.utils.Sequence):
 
 
         # ---- Resize ----
-        img = resize(img, (height, width, img.shape[2], img.shape[3]), order=1, preserve_range=True, anti_aliasing=True)
-        mask = resize(mask, (height, width, mask.shape[2], classes), order=0, preserve_range=True, anti_aliasing=False)
+        img = resize(
+            img,
+            (height, width, img.shape[2], img.shape[3]),
+            order=1,
+            preserve_range=True,
+            anti_aliasing=True
+        ).astype(np.float32, copy=False)
+        mask = resize(
+            mask,
+            (height, width, mask.shape[2], classes),
+            order=0,
+            preserve_range=True,
+            anti_aliasing=False
+        ).astype(np.float32, copy=False)
         # ---- Patchify the Volume ----
 
 
@@ -685,19 +695,29 @@ class PatchGenerator(tf.keras.utils.Sequence):
             img = np.pad(img, ((0, 0), (0, 0), (0, pad_amount), (0, 0)), mode='constant', constant_values=0)
             mask = np.pad(mask, ((0, 0), (0, 0), (0, pad_amount), (0, 0)), mode='constant', constant_values=0)
 
-        patches_img = patchify(img, self.patch_size, step=(self.step_size[0], self.step_size[1],
-                              self.step_size[2], self.patch_size[3]))
-        patches_mask = patchify(mask, (self.patch_size[0], self.patch_size[1], self.patch_size[2], classes),
-                            step=(self.step_size[0], self.step_size[1], self.step_size[2], classes))
+        patches_img = patchify(
+            img,
+            self.patch_size,
+            step=(self.step_size[0], self.step_size[1], self.step_size[2], self.patch_size[3])
+        )
+        patches_mask = patchify(
+            mask,
+            (self.patch_size[0], self.patch_size[1], self.patch_size[2], classes),
+            step=(self.step_size[0], self.step_size[1], self.step_size[2], classes)
+        )
 
-
-        # Reshape into list of patches
+        # Reshape into arrays of patches
         num_patches = np.prod(patches_img.shape[:3])
-        patches_img = patches_img.reshape(num_patches, *self.patch_size)
-        patches_mask = patches_mask.reshape(num_patches, self.patch_size[0], self.patch_size[1], self.patch_size[2],6)
+        patches_img = patches_img.reshape(num_patches, *self.patch_size).astype(np.float32, copy=False)
+        patches_mask = patches_mask.reshape(
+            num_patches,
+            self.patch_size[0],
+            self.patch_size[1],
+            self.patch_size[2],
+            classes
+        ).astype(np.float32, copy=False)
 
         # ---- Print ALL Patches for Debugging ----
-        filename = os.path.basename(self.image_files[idx])
         print(f"\nProcessing: {filename}")
         # print(f"Volume {idx} produced {num_patches} patches:")
         # for j in range(num_patches):
@@ -727,21 +747,19 @@ class PatchGenerator(tf.keras.utils.Sequence):
 
 
         # ---- Filter Out Empty Patches ----
-        non_empty_patches = []
-        for img_patch, mask_patch in zip(patches_img, patches_mask):
-            total_voxels = np.prod(mask_patch.shape[:-1])
-            foreground_voxels = np.sum(mask_patch[..., 1:6])
-            if foreground_voxels / total_voxels > self.threshold:
-                non_empty_patches.append((img_patch, mask_patch))
+        foreground_voxels = patches_mask[..., 1:].sum(axis=(1, 2, 3, 4))
+        keep_mask = (foreground_voxels / max(1.0, float(self.patch_voxels))) > self.threshold
 
+        if not np.any(keep_mask):
+            return None, None
 
-        if not non_empty_patches :
-            # print(f"Volume {idx}: All patches are empty. Skipping.")
-            return None
-        else  :
-          # print("ok")
-            #print(non_empty_patches)
-            return non_empty_patches
+        filtered_imgs = patches_img[keep_mask]
+        filtered_masks = patches_mask[keep_mask]
+
+        # Explicitly free intermediate arrays
+        del patches_img, patches_mask, foreground_voxels, keep_mask
+
+        return filtered_imgs, filtered_masks
 
 """## Datu apstrāde"""
 
@@ -2227,10 +2245,10 @@ class TorchPatchDataset(Dataset):
 
         # convert P patches into batch dimension
         # resulting shape: (P, C, D, H, W)
-        imgs = torch.tensor(imgs).permute(0, 4, 3, 1, 2).float()
-        masks = torch.tensor(masks).permute(0, 4, 3, 1, 2).float()
+        imgs = torch.from_numpy(imgs).permute(0, 4, 3, 1, 2).contiguous()
+        masks = torch.from_numpy(masks).permute(0, 4, 3, 1, 2).contiguous()
 
-        return imgs, masks
+        return imgs.float(), masks.float()
 
 train_dataset = TorchPatchDataset(train_gen)
 val_dataset   = TorchPatchDataset(val_gen)
