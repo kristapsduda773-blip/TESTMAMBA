@@ -99,6 +99,7 @@ from tensorflow.keras.utils import Sequence
 from tensorflow.keras.layers import Input, Conv3D, UpSampling3D, Dense, Flatten, Reshape, Layer
 from tensorflow.keras.models import Model
 import pickle
+import matplotlib
 import matplotlib.pyplot as plt
 import nibabel as nib
 from patchify import patchify, unpatchify
@@ -569,6 +570,7 @@ class PatchGenerator(tf.keras.utils.Sequence):
                  augment=False,
                  step_size=step_size,
                  threshold = threshold,
+                 log_processing=True,
                  **kwargs):
         super().__init__(**kwargs)
 
@@ -595,6 +597,7 @@ class PatchGenerator(tf.keras.utils.Sequence):
         self.on_epoch_end()
         self.step_size = step_size
         self.threshold = threshold
+        self.log_processing = log_processing
 
         self.patch_voxels = np.prod(self.patch_size[:3])
 
@@ -755,7 +758,8 @@ class PatchGenerator(tf.keras.utils.Sequence):
         ).astype(np.float32, copy=False)
 
         # ---- Print ALL Patches for Debugging ----
-        print(f"\nProcessing: {filename}")
+        if self.log_processing:
+            print(f"\nProcessing: {filename}")
         # print(f"Volume {idx} produced {num_patches} patches:")
         # for j in range(num_patches):
         #     plt.figure(figsize=(10, 4))
@@ -2651,12 +2655,19 @@ def prepare_preview_batch(preview_gen):
     preview_ds = GeneratorWrapperDataset(preview_gen)
     if len(preview_ds) == 0:
         print("Preview generator produced no samples; per-epoch previews disabled.")
+    log_attr_present = hasattr(preview_gen, "log_processing")
+    original_log_setting = preview_gen.log_processing if log_attr_present else None
+    if log_attr_present:
+        preview_gen.log_processing = False
     try:
         batch = preview_ds[0]
         return tuple(t.cpu() for t in batch)
     except Exception as exc:
         print(f"Unable to prepare preview batch: {exc}")
         return None
+    finally:
+        if log_attr_present:
+            preview_gen.log_processing = original_log_setting
 
 def build_parser():
     p = argparse.ArgumentParser(description="Train or smoke-test the Tri-Oriented Mamba U-Net.")
@@ -2929,7 +2940,7 @@ def show_mid_slice_preview(
 
     max_class_value = max(int(target_slice_np.max()), int(pred_slice_np.max()))
     num_palette_colors = max(max_class_value + 1, 2)
-    mask_cmap = plt.cm.get_cmap('tab20', num_palette_colors)
+    mask_cmap = matplotlib.colormaps.get_cmap('tab20').resampled(num_palette_colors)
 
     fig, axes = plt.subplots(1, 2, figsize=(10, 5))
     overlays = [
@@ -2943,7 +2954,7 @@ def show_mid_slice_preview(
         {
             "mask": pred_slice_np,
             "title": "Predicted Mask",
-            "cmap": plt.cm.get_cmap("jet"),
+            "cmap": matplotlib.colormaps.get_cmap("jet"),
             "vmin": None,
             "vmax": None,
         },
@@ -2971,10 +2982,6 @@ def show_mid_slice_preview(
 
     if was_training:
         model.train()
-
-train_loader, val_loader = build_dataloaders(train_gen, val_gen, num_workers=0)
-batch = next(iter(train_loader))
-print(batch[0].shape)
 
 def main():
     args, _ = parser.parse_known_args()
