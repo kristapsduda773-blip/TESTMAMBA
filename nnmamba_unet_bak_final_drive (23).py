@@ -2927,55 +2927,41 @@ def show_mid_slice_preview(
     print(f"    classes gt={gt_classes} pred={pred_classes}")
 
 
-    fig, axes = plt.subplots(1, 2, figsize=(8, 4))
-    axes[0].imshow(target_slice_np, cmap='gray')
-    axes[0].set_title("Ground truth (mid slice)")
-    axes[0].axis('off')
-
-    axes[1].imshow(pred_slice_np, cmap='jet')
-    axes[1].set_title("Prediction (mid slice)")
-    axes[1].axis('off')
-
-    fig.tight_layout()
-    fig.subplots_adjust(top=0.85)
-    fig.suptitle(f"Epoch {epoch_idx} preview (dice={sample_dice:.4f})")
-    plt.show()
-
-
     max_class_value = max(int(target_slice_np.max()), int(pred_slice_np.max()))
     num_palette_colors = max(max_class_value + 1, 2)
     mask_cmap = plt.cm.get_cmap('tab20', num_palette_colors)
 
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-    axes[0].imshow(img_norm, cmap='gray')
-    axes[0].set_title("Input (mid slice)")
-    axes[0].axis('off')
-
+    fig, axes = plt.subplots(1, 2, figsize=(10, 5))
     overlays = [
-        (target_slice_np, "Ground Truth Mask"),
-        (pred_slice_np, "Predicted Mask"),
+        {
+            "mask": target_slice_np,
+            "title": "Ground Truth Mask",
+            "cmap": mask_cmap,
+            "vmin": 0,
+            "vmax": num_palette_colors - 1,
+        },
+        {
+            "mask": pred_slice_np,
+            "title": "Predicted Mask",
+            "cmap": plt.cm.get_cmap("jet"),
+            "vmin": None,
+            "vmax": None,
+        },
     ]
-    for ax, (mask, title) in zip(axes[1:], overlays):
+    for ax, overlay in zip(axes, overlays):
         ax.imshow(img_norm, cmap='gray')
         ax.imshow(
-            mask,
-            cmap=mask_cmap,
+            overlay["mask"],
+            cmap=overlay["cmap"],
             alpha=overlay_alpha,
-            vmin=0,
-            vmax=num_palette_colors - 1,
+            vmin=overlay["vmin"],
+            vmax=overlay["vmax"],
         )
-        ax.set_title(title)
+        ax.set_title(overlay["title"])
         ax.axis('off')
 
     fig.suptitle(f"Epoch {epoch_idx} — Dice: {sample_dice:.4f}")
     fig.tight_layout()
-
-    if preview_dir is not None:
-        ensure_dir(preview_dir)
-        filename = f"epoch_{epoch_idx:04d}_sample_{sample_idx:02d}.png"
-        save_path = os.path.join(preview_dir, filename)
-        fig.savefig(save_path, dpi=150, bbox_inches='tight')
-        print(f"[Epoch {epoch_idx}] Preview saved to {save_path}")
 
     if show_plot:
         plt.show(block=False)
