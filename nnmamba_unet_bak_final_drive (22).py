@@ -2939,11 +2939,6 @@ def show_mid_slice_preview(
 
     print(f"[Epoch {epoch_idx}] Preview dice={sample_dice:.4f}")
     print("[Epoch {0}] Input mid-slice stats -> min: {1:.4f}, max: {2:.4f}".format(epoch_idx, float(img_norm.min()), float(img_norm.max())))
-    print(f"[Epoch {epoch_idx}] Ground truth mask (mid slice):")
-    print(target_slice_np)
-    print(f"[Epoch {epoch_idx}] Predicted mask (mid slice):")
-    print(pred_slice_np)
-
     gt_classes = np.unique(target_slice_np).tolist()
     pred_classes = np.unique(pred_slice_np).tolist()
     print(f"    classes gt={gt_classes} pred={pred_classes}")
