@@ -2665,18 +2665,18 @@ def build_dataloaders(train_gen, val_gen, batch_size=1, num_workers=2):
     val_loader = DataLoader(val_ds, batch_size=None, shuffle=False, num_workers=0)
     return train_loader, val_loader
 
-def prepare_preview_batch(test_gen):
-    if test_gen is None:
+def prepare_preview_batch(preview_gen):
+    if preview_gen is None:
         return None
-    test_ds = GeneratorWrapperDataset(test_gen)
-    if len(test_ds) == 0:
-        print("Test generator produced no samples; per-epoch previews disabled.")
+    preview_ds = GeneratorWrapperDataset(preview_gen)
+    if len(preview_ds) == 0:
+        print("Preview generator produced no samples; per-epoch previews disabled.")
         return None
     try:
-        batch = test_ds[0]
+        batch = preview_ds[0]
         return tuple(t.cpu() for t in batch)
     except Exception as exc:
-        print(f"Unable to prepare test preview batch: {exc}")
+        print(f"Unable to prepare preview batch: {exc}")
         return None
 
 
@@ -2819,7 +2819,7 @@ def fit_pytorch_mamba(
     save_name='best_model_mamba_pytorch.pt',
     class_weights_list=CLASS_WEIGHT_TUPLE,
     device_str=None,
-    test_gen=None,
+    preview_gen=None,
     preview_dir=TEST_PREVIEW_DIR,
 ):
     ensure_dir(save_dir)
@@ -2827,7 +2827,7 @@ def fit_pytorch_mamba(
 
     # Build data loaders
     train_loader, val_loader = build_dataloaders(train_gen, val_gen)
-    preview_batch = prepare_preview_batch(test_gen)
+    preview_batch = prepare_preview_batch(preview_gen)
 
     # Build model
     model = UNet3DMamba(in_channels=4, num_classes=6, base_filters=32).to(device)
@@ -2935,7 +2935,7 @@ def main():
         save_dir=CHECKPOINT_DIR,
         class_weights_list=CLASS_WEIGHT_TUPLE,
         device_str=args.device,
-        test_gen=test_gen,
+        preview_gen=val_gen,
     )
 
     val_history = history.get('val_loss', [])
