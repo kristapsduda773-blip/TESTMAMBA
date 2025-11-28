@@ -2933,19 +2933,31 @@ def show_mid_slice_preview(
 
     fig, axes = plt.subplots(1, 2, figsize=(10, 5))
     overlays = [
-        (target_slice_np, "Ground Truth Mask"),
-        (pred_slice_np, "Predicted Mask"),
+        {
+            "mask": target_slice_np,
+            "title": "Ground Truth Mask",
+            "cmap": mask_cmap,
+            "vmin": 0,
+            "vmax": num_palette_colors - 1,
+        },
+        {
+            "mask": pred_slice_np,
+            "title": "Predicted Mask",
+            "cmap": plt.cm.get_cmap("jet"),
+            "vmin": None,
+            "vmax": None,
+        },
     ]
-    for ax, (mask, title) in zip(axes, overlays):
+    for ax, overlay in zip(axes, overlays):
         ax.imshow(img_norm, cmap='gray')
         ax.imshow(
-            mask,
-            cmap=mask_cmap,
+            overlay["mask"],
+            cmap=overlay["cmap"],
             alpha=overlay_alpha,
-            vmin=0,
-            vmax=num_palette_colors - 1,
+            vmin=overlay["vmin"],
+            vmax=overlay["vmax"],
         )
-        ax.set_title(title)
+        ax.set_title(overlay["title"])
         ax.axis('off')
 
     fig.suptitle(f"Epoch {epoch_idx} — Dice: {sample_dice:.4f}")
