@@ -2680,69 +2680,6 @@ def prepare_preview_batch(test_gen):
         return None
 
 
-def show_mid_slice_preview(model, preview_batch, device, epoch_idx, class_weights=None, preview_dir=TEST_PREVIEW_DIR):
-    if preview_batch is None:
-        return
-
-    x_cpu, y_cpu = preview_batch
-    if not isinstance(x_cpu, torch.Tensor):
-        x_cpu = torch.from_numpy(x_cpu).permute(0, 4, 3, 1, 2).contiguous().float()
-    if not isinstance(y_cpu, torch.Tensor):
-        y_cpu = torch.from_numpy(y_cpu).permute(0, 4, 3, 1, 2).contiguous().float()
-
-    x_test = x_cpu.to(device)
-    y_test = y_cpu.to(device)
-
-    was_training = model.training
-    model.eval()
-
-    if class_weights is None:
-        class_weights = torch.tensor(CLASS_WEIGHT_TUPLE, dtype=torch.float32, device=device)
-    elif class_weights.device != device:
-        class_weights = class_weights.to(device)
-
-
-    with torch.no_grad():
-        logits = model(x_test)
-        sample_dice = dice_metric_pt(y_test, logits, class_weights).item()
-        probs = F.softmax(logits, dim=1)
-
-    pred_mask = torch.argmax(probs, dim=1).cpu().numpy()
-    true_mask = torch.argmax(y_test, dim=1).cpu().numpy()
-    volume = x_test[0, 0].detach().cpu().numpy()
-
-    slice_idx = max(0, volume.shape[0] // 2)
-    image_slice = volume[slice_idx]
-    gt_slice = true_mask[0, slice_idx]
-    pred_slice = pred_mask[0, slice_idx]
-
-    img_norm = (image_slice - image_slice.min()) / (image_slice.max() - image_slice.min() + 1e-8)
-
-    fig, axes = plt.subplots(1, 3, figsize=(12, 4))
-    axes[0].imshow(img_norm, cmap='gray')
-    axes[0].set_title("Test image")
-    axes[0].axis('off')
-    axes[1].imshow(gt_slice, cmap='nipy_spectral')
-    axes[1].set_title("Ground truth")
-    axes[1].axis('off')
-    axes[2].imshow(pred_slice, cmap='nipy_spectral')
-    axes[2].set_title("Prediction")
-    axes[2].axis('off')
-
-    ensure_dir(preview_dir)
-    preview_path = os.path.join(preview_dir, f"epoch_{epoch_idx:04d}.png"))
-    fig.tight_layout()
-    fig.savefig(preview_path, bbox_inches='tight')
-    plt.close(fig)
-
-    gt_classes = np.unique(gt_slice.astype(np.int32)).tolist()
-    pred_classes = np.unique(pred_slice.astype(np.int32)).tolist()
-    print(f"[Epoch {epoch_idx}] Saved test preview to {preview_path} (dice={sample_dice:.4f})")
-    print(f"    classes gt={gt_classes} pred={pred_classes}")
-
-    if was_training:
-        model.train()
-
 def build_parser():
     p = argparse.ArgumentParser(description="Train or smoke-test the Tri-Oriented Mamba U-Net.")
     p.add_argument("--mode", choices=("train", "smoke"), default="train")
@@ -2856,8 +2793,19 @@ def fit_pytorch_mamba(
     history = { 'loss': [], 'val_loss': [], 'dice': [], 'val_dice': [], 'lr': [] }
 
     for epoch in range(num_epochs):
-        train_loss, train_dice = train_epoch(model, train_loader, optimizer, scheduler, device, class_weights, scaler=scaler)
+        train_loss, train_dice = train_epoch(
+            model,
+            train_loader,
+            optimizer,
+            scheduler,
+            device,
+            class_weights,
+            scaler=scaler,
+        )
+        print(f"[Epoch {epoch+1}] Finished training data pass.")
+
         val_loss, val_dice = eval_epoch(model, val_loader, device, class_weights)
+        print(f"[Epoch {epoch+1}] Finished validation data pass.")
 
         # Record LR (assume first param group)
         current_lr = scheduler.get_last_lr()[0]
@@ -2877,8 +2825,6 @@ def fit_pytorch_mamba(
                 class_weights=class_weights,
                 preview_dir=preview_dir,
             )
-
-        show_mid_slice_preview(model, preview_batch, device, epoch_idx=epoch + 1)
 
         if val_loss < best_val:
             best_val = val_loss
@@ -2931,48 +2877,91 @@ def capture_preview_batch(loader):
     return tuple(t.detach().clone() for t in batch)
 
 
-def show_mid_slice_preview(model, preview_batch, device, epoch_idx, sample_idx=0):
+def show_mid_slice_preview(
+    model,
+    preview_batch,
+    device,
+    epoch_idx,
+    class_weights=None,
+    preview_dir=TEST_PREVIEW_DIR,
+    sample_idx=0,
+):
     """
-    Plot ground-truth vs prediction for the middle depth slice of one sample.
+    Plot & optionally persist the middle-depth slice preview for one sample.
     """
     if preview_batch is None:
         return
 
     inputs_cpu, targets_cpu = preview_batch
-    if inputs_cpu.shape[0] == 0:
-        return
+    if isinstance(inputs_cpu, torch.Tensor):
+        x_cpu = inputs_cpu
+    else:
+        x_cpu = torch.from_numpy(inputs_cpu).permute(0, 4, 3, 1, 2).contiguous().float()
+    if isinstance(targets_cpu, torch.Tensor):
+        y_cpu = targets_cpu
+    else:
+        y_cpu = torch.from_numpy(targets_cpu).permute(0, 4, 3, 1, 2).contiguous().float()
 
-    x = inputs_cpu[sample_idx: sample_idx + 1].to(device)
-    y = targets_cpu[sample_idx: sample_idx + 1].to(device)
+    if x_cpu.shape[0] == 0:
+        return
+    sample_idx = min(sample_idx, x_cpu.shape[0] - 1)
+
+    x = x_cpu[sample_idx: sample_idx + 1].to(device)
+    y = y_cpu[sample_idx: sample_idx + 1].to(device)
+
+    if class_weights is None:
+        class_weights = torch.tensor(CLASS_WEIGHT_TUPLE, dtype=torch.float32, device=device)
+    else:
+        class_weights = class_weights.to(device)
 
     was_training = model.training
     model.eval()
     with torch.no_grad():
         logits = model(x)
-        preds = torch.argmax(logits, dim=1)
+        probs = F.softmax(logits, dim=1)
+        preds = torch.argmax(probs, dim=1)
         target = torch.argmax(y, dim=1)
-    if was_training:
-        model.train()
+        sample_dice = dice_metric_pt(y, logits, class_weights).item()
 
     depth_dim = preds.shape[1]
     if depth_dim == 0:
+        if was_training:
+            model.train()
         return
     mid = depth_dim // 2
 
     pred_slice = preds[0, mid].detach().cpu().numpy()
     target_slice = target[0, mid].detach().cpu().numpy()
+    image_slice = x[0, 0, mid].detach().cpu().numpy()
+    img_norm = (image_slice - image_slice.min()) / (image_slice.max() - image_slice.min() + 1e-8)
 
-    fig, axes = plt.subplots(1, 2, figsize=(9, 4))
-    axes[0].imshow(target_slice, cmap="nipy_spectral")
-    axes[0].set_title("Ground truth (mid slice)")
-    axes[1].imshow(pred_slice, cmap="nipy_spectral")
-    axes[1].set_title("Prediction (mid slice)")
+    fig, axes = plt.subplots(1, 3, figsize=(12, 4))
+    axes[0].imshow(img_norm, cmap="gray")
+    axes[0].set_title("Input (mid slice)")
+    axes[1].imshow(target_slice, cmap="nipy_spectral")
+    axes[1].set_title("Ground truth")
+    axes[2].imshow(pred_slice, cmap="nipy_spectral")
+    axes[2].set_title("Prediction")
     for ax in axes:
         ax.axis("off")
-    fig.suptitle(f"Epoch {epoch_idx}: validation preview")
-    plt.tight_layout()
-    plt.show()
+    fig.suptitle(f"Epoch {epoch_idx}: dice {sample_dice:.4f}")
+    fig.tight_layout()
+
+    preview_path = None
+    if preview_dir:
+        ensure_dir(preview_dir)
+        preview_path = os.path.join(preview_dir, f"epoch_{epoch_idx:04d}.png")
+        fig.savefig(preview_path, bbox_inches="tight")
+        print(f"[Epoch {epoch_idx}] Saved preview to {preview_path} (dice={sample_dice:.4f})")
+        gt_classes = np.unique(target_slice.astype(np.int32)).tolist()
+        pred_classes = np.unique(pred_slice.astype(np.int32)).tolist()
+        print(f"    classes gt={gt_classes} pred={pred_classes}")
+    else:
+        plt.show()
     plt.close(fig)
+
+    if was_training:
+        model.train()
 
 train_loader, val_loader = build_dataloaders(train_gen, val_gen, num_workers=0)
 batch = next(iter(train_loader))
