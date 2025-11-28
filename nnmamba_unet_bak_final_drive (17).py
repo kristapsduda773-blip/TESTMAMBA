@@ -2665,24 +2665,41 @@ def build_dataloaders(train_gen, val_gen, batch_size=1, num_workers=2):
     val_loader = DataLoader(val_ds, batch_size=None, shuffle=False, num_workers=0)
     return train_loader, val_loader
 
-
-def build_test_loader(test_gen, num_workers=0):
+def prepare_preview_batch(test_gen):
     if test_gen is None:
         return None
     test_ds = GeneratorWrapperDataset(test_gen)
-    return DataLoader(test_ds, batch_size=None, shuffle=False, num_workers=num_workers)
+    if len(test_ds) == 0:
+        print("Test generator produced no samples; per-epoch previews disabled.")
+        return None
+    try:
+        batch = test_ds[0]
+        return tuple(t.cpu() for t in batch)
+    except Exception as exc:
+        print(f"Unable to prepare test preview batch: {exc}")
+        return None
 
 
-def log_test_prediction(model, preview_batch, device, epoch_idx, class_weights, preview_dir):
+def show_mid_slice_preview(model, preview_batch, device, epoch_idx, class_weights=None, preview_dir=TEST_PREVIEW_DIR):
     if preview_batch is None:
         return
 
     x_cpu, y_cpu = preview_batch
+    if not isinstance(x_cpu, torch.Tensor):
+        x_cpu = torch.from_numpy(x_cpu).permute(0, 4, 3, 1, 2).contiguous().float()
+    if not isinstance(y_cpu, torch.Tensor):
+        y_cpu = torch.from_numpy(y_cpu).permute(0, 4, 3, 1, 2).contiguous().float()
+
     x_test = x_cpu.to(device)
     y_test = y_cpu.to(device)
 
     was_training = model.training
     model.eval()
+
+    if class_weights is None:
+        class_weights = torch.tensor(CLASS_WEIGHT_TUPLE, dtype=torch.float32, device=device)
+    elif class_weights.device != device:
+        class_weights = class_weights.to(device)
 
     with torch.no_grad():
         logits = model(x_test)
@@ -2712,14 +2729,14 @@ def log_test_prediction(model, preview_batch, device, epoch_idx, class_weights, 
     axes[2].axis('off')
 
     ensure_dir(preview_dir)
-    preview_path = os.path.join(preview_dir, f"epoch_{epoch_idx + 1:04d}.png")
+    preview_path = os.path.join(preview_dir, f"epoch_{epoch_idx:04d}.png")
     fig.tight_layout()
     fig.savefig(preview_path, bbox_inches='tight')
     plt.close(fig)
 
     gt_classes = np.unique(gt_slice.astype(np.int32)).tolist()
     pred_classes = np.unique(pred_slice.astype(np.int32)).tolist()
-    print(f"[Epoch {epoch_idx + 1}] Saved test preview to {preview_path} (dice={sample_dice:.4f})")
+    print(f"[Epoch {epoch_idx}] Saved test preview to {preview_path} (dice={sample_dice:.4f})")
     print(f"    classes gt={gt_classes} pred={pred_classes}")
 
     if was_training:
@@ -2810,17 +2827,7 @@ def fit_pytorch_mamba(
 
     # Build data loaders
     train_loader, val_loader = build_dataloaders(train_gen, val_gen)
-    preview_batch = None
-    if test_gen is not None:
-        test_loader = build_test_loader(test_gen, num_workers=0)
-        try:
-            preview_batch = next(iter(test_loader))
-            preview_batch = tuple(t.cpu() for t in preview_batch)
-        except StopIteration:
-            print("Test generator produced no samples; per-epoch previews disabled.")
-        except Exception as exc:
-            print(f"Unable to prepare test preview batch: {exc}")
-            preview_batch = None
+    preview_batch = prepare_preview_batch(test_gen)
 
     # Build model
     model = UNet3DMamba(in_channels=4, num_classes=6, base_filters=32).to(device)
@@ -2858,7 +2865,14 @@ def fit_pytorch_mamba(
         print(f"Epoch {epoch+1}/{num_epochs}  loss={train_loss:.4f}  val_loss={val_loss:.4f}  dice={train_dice:.4f}  val_dice={val_dice:.4f}  lr={current_lr:.6f}")
 
         if preview_batch is not None:
-            log_test_prediction(model, preview_batch, device, epoch, class_weights, preview_dir)
+            show_mid_slice_preview(
+                model,
+                preview_batch,
+                device,
+                epoch_idx=epoch + 1,
+                class_weights=class_weights,
+                preview_dir=preview_dir,
+            )
 
         if val_loss < best_val:
             best_val = val_loss
