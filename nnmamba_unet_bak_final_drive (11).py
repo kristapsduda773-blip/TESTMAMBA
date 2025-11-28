@@ -3156,11 +3156,12 @@ def train_epoch(model, loader, optimizer, scheduler, device, class_weights, alph
         x = x.to(device)
         y = y.to(device)
         optimizer.zero_grad(set_to_none=True)
-        with torch.cuda.amp.autocast(enabled=scaler is not None):
+        with torch.amp.autocast(device_type=device.type if scaler is not None else "cuda", enabled=scaler is not None):
             logits = model(x)
             loss = combined_loss_pt(y, logits, class_weights, alpha=alpha)
         if scaler is not None:
-            scaler.scale(loss).step(optimizer)
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
             scaler.update()
         else:
             loss.backward()
