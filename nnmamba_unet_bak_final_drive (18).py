@@ -2887,7 +2887,8 @@ def show_mid_slice_preview(
     sample_idx=0,
 ):
     """
-    Plot & optionally persist the middle-depth slice preview for one sample.
+    Print the mid-depth slice masks for one sample so we can quickly assess
+    predictions without saving preview images to disk.
     """
     if preview_batch is None:
         return
@@ -2935,30 +2936,16 @@ def show_mid_slice_preview(
     image_slice = x[0, 0, mid].detach().cpu().numpy()
     img_norm = (image_slice - image_slice.min()) / (image_slice.max() - image_slice.min() + 1e-8)
 
-    fig, axes = plt.subplots(1, 3, figsize=(12, 4))
-    axes[0].imshow(img_norm, cmap="gray")
-    axes[0].set_title("Input (mid slice)")
-    axes[1].imshow(target_slice, cmap="nipy_spectral")
-    axes[1].set_title("Ground truth")
-    axes[2].imshow(pred_slice, cmap="nipy_spectral")
-    axes[2].set_title("Prediction")
-    for ax in axes:
-        ax.axis("off")
-    fig.suptitle(f"Epoch {epoch_idx}: dice {sample_dice:.4f}")
-    fig.tight_layout()
+    print(f"[Epoch {epoch_idx}] Preview dice={sample_dice:.4f}")
+    print("[Epoch {0}] Input mid-slice stats -> min: {1:.4f}, max: {2:.4f}".format(epoch_idx, float(img_norm.min()), float(img_norm.max())))
+    print(f"[Epoch {epoch_idx}] Ground truth mask (mid slice):")
+    print(target_slice.astype(np.int32))
+    print(f"[Epoch {epoch_idx}] Predicted mask (mid slice):")
+    print(pred_slice.astype(np.int32))
 
-    preview_path = None
-    if preview_dir:
-        ensure_dir(preview_dir)
-        preview_path = os.path.join(preview_dir, f"epoch_{epoch_idx:04d}.png")
-        fig.savefig(preview_path, bbox_inches="tight")
-        print(f"[Epoch {epoch_idx}] Saved preview to {preview_path} (dice={sample_dice:.4f})")
-        gt_classes = np.unique(target_slice.astype(np.int32)).tolist()
-        pred_classes = np.unique(pred_slice.astype(np.int32)).tolist()
-        print(f"    classes gt={gt_classes} pred={pred_classes}")
-    else:
-        plt.show()
-    plt.close(fig)
+    gt_classes = np.unique(target_slice.astype(np.int32)).tolist()
+    pred_classes = np.unique(pred_slice.astype(np.int32)).tolist()
+    print(f"    classes gt={gt_classes} pred={pred_classes}")
 
     if was_training:
         model.train()
