@@ -2871,6 +2871,8 @@ def fit_pytorch_mamba(
                 print(f"Early stopping at epoch {epoch+1}")
                 break
 
+        print(f"   epochs without val improvement: {no_improve}")
+
         # Load best
         if best_state is not None:
             model.load_state_dict(best_state)
