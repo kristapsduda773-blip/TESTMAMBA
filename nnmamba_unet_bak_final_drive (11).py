@@ -3156,10 +3156,12 @@ def train_epoch(model, loader, optimizer, scheduler, device, class_weights, alph
         x = x.to(device)
         y = y.to(device)
         optimizer.zero_grad(set_to_none=True)
-        with torch.amp.autocast(device_type=device.type if scaler is not None else "cuda", enabled=scaler is not None):
+        use_amp = scaler is not None
+        autocast_device = "cuda" if device.type == "cuda" else "cpu"
+        with torch.amp.autocast(device_type=autocast_device, enabled=use_amp):
             logits = model(x)
             loss = combined_loss_pt(y, logits, class_weights, alpha=alpha)
-        if scaler is not None:
+        if use_amp:
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
@@ -3193,6 +3195,64 @@ def eval_epoch(model, loader, device, class_weights):
     return epoch_loss / max(1, count), epoch_dice / max(1, count)
 
 
+def capture_preview_batch(loader):
+    """
+    Grab a single batch from the provided loader so we can reuse it
+    for visualization at the end of every epoch.
+    """
+    try:
+        batch = next(iter(loader))
+    except StopIteration:
+        return None
+    # Detach and clone so the tensors stay valid even if the original loader
+    # releases its underlying memory or runs on pinned buffers.
+    return tuple(t.detach().clone() for t in batch)
+
+
+def show_mid_slice_preview(model, preview_batch, device, epoch_idx, sample_idx=0):
+    """
+    Plot ground-truth vs prediction for the middle depth slice of one sample.
+    """
+    if preview_batch is None:
+        return
+
+    inputs_cpu, targets_cpu = preview_batch
+    if inputs_cpu.shape[0] == 0:
+        return
+
+    x = inputs_cpu[sample_idx: sample_idx + 1].to(device)
+    y = targets_cpu[sample_idx: sample_idx + 1].to(device)
+
+    was_training = model.training
+    model.eval()
+    with torch.no_grad():
+        logits = model(x)
+        preds = torch.argmax(logits, dim=1)
+        target = torch.argmax(y, dim=1)
+    if was_training:
+        model.train()
+
+    depth_dim = preds.shape[1]
+    if depth_dim == 0:
+        return
+    mid = depth_dim // 2
+
+    pred_slice = preds[0, mid].detach().cpu().numpy()
+    target_slice = target[0, mid].detach().cpu().numpy()
+
+    fig, axes = plt.subplots(1, 2, figsize=(9, 4))
+    axes[0].imshow(target_slice, cmap="nipy_spectral")
+    axes[0].set_title("Ground truth (mid slice)")
+    axes[1].imshow(pred_slice, cmap="nipy_spectral")
+    axes[1].set_title("Prediction (mid slice)")
+    for ax in axes:
+        ax.axis("off")
+    fig.suptitle(f"Epoch {epoch_idx}: validation preview")
+    plt.tight_layout()
+    plt.show()
+    plt.close(fig)
+
+
 def fit_pytorch_mamba(train_gen, val_gen, num_epochs=10000, patience=30, base_lr=1e-5, max_lr=1e-2, step_size=670,
                       save_dir='/content/drive/MyDrive/Unet_checkpoints', save_name='best_model_mamba_pytorch.pt',
                       class_weights_list=CLASS_WEIGHT_TUPLE, device_str=None):
@@ -3201,6 +3261,7 @@ def fit_pytorch_mamba(train_gen, val_gen, num_epochs=10000, patience=30, base_lr
 
     # Build data loaders
     train_loader, val_loader = build_dataloaders(train_gen, val_gen)
+    preview_batch = capture_preview_batch(val_loader)
 
     # Build model
     model = UNet3DMamba(in_channels=4, num_classes=6, base_filters=32).to(device)
@@ -3211,8 +3272,13 @@ def fit_pytorch_mamba(train_gen, val_gen, num_epochs=10000, patience=30, base_lr
     # Optimizer + scheduler
     optimizer, scheduler = build_optimizer_and_scheduler(model, base_lr=base_lr, max_lr=max_lr, step_size=step_size)
 
-    # AMP scaler
-    scaler = torch.cuda.amp.GradScaler(enabled=torch.cuda.is_available())
+    # AMP scaler (new torch.amp API with backward compatibility)
+    scaler = None
+    if torch.cuda.is_available():
+        try:
+            scaler = torch.amp.GradScaler("cuda")
+        except (AttributeError, TypeError):
+            scaler = torch.cuda.amp.GradScaler()
 
     best_val = float('inf')
     best_state = None
@@ -3233,6 +3299,7 @@ def fit_pytorch_mamba(train_gen, val_gen, num_epochs=10000, patience=30, base_lr
         history['lr'].append(current_lr)
 
         print(f"Epoch {epoch+1}/{num_epochs}  loss={train_loss:.4f}  val_loss={val_loss:.4f}  dice={train_dice:.4f}  val_dice={val_dice:.4f}  lr={current_lr:.6f}")
+        show_mid_slice_preview(model, preview_batch, device, epoch_idx=epoch + 1)
 
         if val_loss < best_val:
             best_val = val_loss
