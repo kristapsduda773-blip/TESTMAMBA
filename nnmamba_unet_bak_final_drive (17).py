@@ -126,6 +126,8 @@ SEG_TEST_MASK = os.path.join(dataset_path, "test_masks")
 
 CHECKPOINT_DIR = '/content/drive/MyDrive/Unet_checkpoints'
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+TEST_PREVIEW_DIR = os.path.join(CHECKPOINT_DIR, "test_predictions")
+os.makedirs(TEST_PREVIEW_DIR, exist_ok=True)
 
 MODEL_SAVE_PATH = os.path.join(CHECKPOINT_DIR, "best_model_dice_Mamba1000.keras")
 MODEL_CONTINUE_PATH = os.path.join(CHECKPOINT_DIR, "continued_model_Mamba1000.keras")
@@ -2663,6 +2665,66 @@ def build_dataloaders(train_gen, val_gen, batch_size=1, num_workers=2):
     val_loader = DataLoader(val_ds, batch_size=None, shuffle=False, num_workers=0)
     return train_loader, val_loader
 
+
+def build_test_loader(test_gen, num_workers=0):
+    if test_gen is None:
+        return None
+    test_ds = GeneratorWrapperDataset(test_gen)
+    return DataLoader(test_ds, batch_size=None, shuffle=False, num_workers=num_workers)
+
+
+def log_test_prediction(model, preview_batch, device, epoch_idx, class_weights, preview_dir):
+    if preview_batch is None:
+        return
+
+    x_cpu, y_cpu = preview_batch
+    x_test = x_cpu.to(device)
+    y_test = y_cpu.to(device)
+
+    was_training = model.training
+    model.eval()
+
+    with torch.no_grad():
+        logits = model(x_test)
+        sample_dice = dice_metric_pt(y_test, logits, class_weights).item()
+        probs = F.softmax(logits, dim=1)
+
+    pred_mask = torch.argmax(probs, dim=1).cpu().numpy()
+    true_mask = torch.argmax(y_test, dim=1).cpu().numpy()
+    volume = x_test[0, 0].detach().cpu().numpy()
+
+    slice_idx = max(0, volume.shape[0] // 2)
+    image_slice = volume[slice_idx]
+    gt_slice = true_mask[0, slice_idx]
+    pred_slice = pred_mask[0, slice_idx]
+
+    img_norm = (image_slice - image_slice.min()) / (image_slice.max() - image_slice.min() + 1e-8)
+
+    fig, axes = plt.subplots(1, 3, figsize=(12, 4))
+    axes[0].imshow(img_norm, cmap='gray')
+    axes[0].set_title("Test image")
+    axes[0].axis('off')
+    axes[1].imshow(gt_slice, cmap='nipy_spectral')
+    axes[1].set_title("Ground truth")
+    axes[1].axis('off')
+    axes[2].imshow(pred_slice, cmap='nipy_spectral')
+    axes[2].set_title("Prediction")
+    axes[2].axis('off')
+
+    ensure_dir(preview_dir)
+    preview_path = os.path.join(preview_dir, f"epoch_{epoch_idx + 1:04d}.png")
+    fig.tight_layout()
+    fig.savefig(preview_path, bbox_inches='tight')
+    plt.close(fig)
+
+    gt_classes = np.unique(gt_slice.astype(np.int32)).tolist()
+    pred_classes = np.unique(pred_slice.astype(np.int32)).tolist()
+    print(f"[Epoch {epoch_idx + 1}] Saved test preview to {preview_path} (dice={sample_dice:.4f})")
+    print(f"    classes gt={gt_classes} pred={pred_classes}")
+
+    if was_training:
+        model.train()
+
 def build_parser():
     p = argparse.ArgumentParser(description="Train or smoke-test the Tri-Oriented Mamba U-Net.")
     p.add_argument("--mode", choices=("train", "smoke"), default="train")
@@ -2728,14 +2790,37 @@ def eval_epoch(model, loader, device, class_weights):
     return epoch_loss / max(1, count), epoch_dice / max(1, count)
 
 
-def fit_pytorch_mamba(train_gen, val_gen, num_epochs=10000, patience=30, base_lr=1e-5, max_lr=1e-2, step_size=670,
-                      save_dir='/content/drive/MyDrive/Unet_checkpoints', save_name='best_model_mamba_pytorch.pt',
-                      class_weights_list=CLASS_WEIGHT_TUPLE, device_str=None):
+def fit_pytorch_mamba(
+    train_gen,
+    val_gen,
+    num_epochs=10000,
+    patience=30,
+    base_lr=1e-5,
+    max_lr=1e-2,
+    step_size=670,
+    save_dir='/content/drive/MyDrive/Unet_checkpoints',
+    save_name='best_model_mamba_pytorch.pt',
+    class_weights_list=CLASS_WEIGHT_TUPLE,
+    device_str=None,
+    test_gen=None,
+    preview_dir=TEST_PREVIEW_DIR,
+):
     ensure_dir(save_dir)
     device = torch.device(device_str or ('cuda' if torch.cuda.is_available() else 'cpu'))
 
     # Build data loaders
     train_loader, val_loader = build_dataloaders(train_gen, val_gen)
+    preview_batch = None
+    if test_gen is not None:
+        test_loader = build_test_loader(test_gen, num_workers=0)
+        try:
+            preview_batch = next(iter(test_loader))
+            preview_batch = tuple(t.cpu() for t in preview_batch)
+        except StopIteration:
+            print("Test generator produced no samples; per-epoch previews disabled.")
+        except Exception as exc:
+            print(f"Unable to prepare test preview batch: {exc}")
+            preview_batch = None
 
     # Build model
     model = UNet3DMamba(in_channels=4, num_classes=6, base_filters=32).to(device)
@@ -2771,6 +2856,9 @@ def fit_pytorch_mamba(train_gen, val_gen, num_epochs=10000, patience=30, base_lr
         history['lr'].append(current_lr)
 
         print(f"Epoch {epoch+1}/{num_epochs}  loss={train_loss:.4f}  val_loss={val_loss:.4f}  dice={train_dice:.4f}  val_dice={val_dice:.4f}  lr={current_lr:.6f}")
+
+        if preview_batch is not None:
+            log_test_prediction(model, preview_batch, device, epoch, class_weights, preview_dir)
 
         if val_loss < best_val:
             best_val = val_loss
@@ -2831,6 +2919,7 @@ def main():
         save_dir=CHECKPOINT_DIR,
         class_weights_list=CLASS_WEIGHT_TUPLE,
         device_str=args.device,
+        test_gen=test_gen,
     )
 
     val_history = history.get('val_loss', [])
