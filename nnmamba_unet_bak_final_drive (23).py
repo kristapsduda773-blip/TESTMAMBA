@@ -2927,21 +2927,6 @@ def show_mid_slice_preview(
     print(f"    classes gt={gt_classes} pred={pred_classes}")
 
 
-    fig, axes = plt.subplots(1, 2, figsize=(8, 4))
-    axes[0].imshow(target_slice_np, cmap='gray')
-    axes[0].set_title("Ground truth (mid slice)")
-    axes[0].axis('off')
-
-    axes[1].imshow(pred_slice_np, cmap='jet')
-    axes[1].set_title("Prediction (mid slice)")
-    axes[1].axis('off')
-
-    fig.tight_layout()
-    fig.subplots_adjust(top=0.85)
-    fig.suptitle(f"Epoch {epoch_idx} preview (dice={sample_dice:.4f})")
-    plt.show()
-
-
     max_class_value = max(int(target_slice_np.max()), int(pred_slice_np.max()))
     num_palette_colors = max(max_class_value + 1, 2)
     mask_cmap = plt.cm.get_cmap('tab20', num_palette_colors)
