@@ -2946,16 +2946,12 @@ def show_mid_slice_preview(
     num_palette_colors = max(max_class_value + 1, 2)
     mask_cmap = plt.cm.get_cmap('tab20', num_palette_colors)
 
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-    axes[0].imshow(img_norm, cmap='gray')
-    axes[0].set_title("Input (mid slice)")
-    axes[0].axis('off')
-
+    fig, axes = plt.subplots(1, 2, figsize=(10, 5))
     overlays = [
         (target_slice_np, "Ground Truth Mask"),
         (pred_slice_np, "Predicted Mask"),
     ]
-    for ax, (mask, title) in zip(axes[1:], overlays):
+    for ax, (mask, title) in zip(axes, overlays):
         ax.imshow(img_norm, cmap='gray')
         ax.imshow(
             mask,
@@ -2969,13 +2965,6 @@ def show_mid_slice_preview(
 
     fig.suptitle(f"Epoch {epoch_idx} — Dice: {sample_dice:.4f}")
     fig.tight_layout()
-
-    if preview_dir is not None:
-        ensure_dir(preview_dir)
-        filename = f"epoch_{epoch_idx:04d}_sample_{sample_idx:02d}.png"
-        save_path = os.path.join(preview_dir, filename)
-        fig.savefig(save_path, dpi=150, bbox_inches='tight')
-        print(f"[Epoch {epoch_idx}] Preview saved to {save_path}")
 
     if show_plot:
         plt.show(block=False)
