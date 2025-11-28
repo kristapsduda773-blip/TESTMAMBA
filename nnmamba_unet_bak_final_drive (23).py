@@ -99,6 +99,7 @@ from tensorflow.keras.utils import Sequence
 from tensorflow.keras.layers import Input, Conv3D, UpSampling3D, Dense, Flatten, Reshape, Layer
 from tensorflow.keras.models import Model
 import pickle
+import matplotlib
 import matplotlib.pyplot as plt
 import nibabel as nib
 from patchify import patchify, unpatchify
@@ -2939,7 +2940,7 @@ def show_mid_slice_preview(
 
     max_class_value = max(int(target_slice_np.max()), int(pred_slice_np.max()))
     num_palette_colors = max(max_class_value + 1, 2)
-    mask_cmap = plt.cm.get_cmap('tab20', num_palette_colors)
+    mask_cmap = matplotlib.colormaps.get_cmap('tab20').resampled(num_palette_colors)
 
     fig, axes = plt.subplots(1, 2, figsize=(10, 5))
     overlays = [
@@ -2953,7 +2954,7 @@ def show_mid_slice_preview(
         {
             "mask": pred_slice_np,
             "title": "Predicted Mask",
-            "cmap": plt.cm.get_cmap("jet"),
+            "cmap": matplotlib.colormaps.get_cmap("jet"),
             "vmin": None,
             "vmax": None,
         },
