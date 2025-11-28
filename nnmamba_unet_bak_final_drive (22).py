@@ -2764,6 +2764,10 @@ def fit_pytorch_mamba(
     # Build data loaders
     train_loader, val_loader = build_dataloaders(train_gen, val_gen)
     preview_batch = prepare_preview_batch(preview_gen)
+    preview_output_dir = None
+    if preview_batch is not None:
+        preview_output_dir = os.path.join(save_dir, "epoch_previews")
+        ensure_dir(preview_output_dir)
 
     # Build model
     model = UNet3DMamba(in_channels=4, num_classes=6, base_filters=32).to(device)
@@ -2818,6 +2822,7 @@ def fit_pytorch_mamba(
                 device,
                 epoch_idx=epoch + 1,
                 class_weights=class_weights,
+                preview_dir=preview_output_dir,
             )
 
         if val_loss < best_val:
@@ -2878,6 +2883,9 @@ def show_mid_slice_preview(
     epoch_idx,
     class_weights=None,
     sample_idx=0,
+    preview_dir=None,
+    overlay_alpha=0.55,
+    show_plot=True,
 ):
     """
     Print a downsampled mid-slice comparison (GT vs prediction) to the console.
@@ -2940,8 +2948,49 @@ def show_mid_slice_preview(
     pred_classes = np.unique(pred_slice_np).tolist()
     print(f"    classes gt={gt_classes} pred={pred_classes}")
 
+    max_class_value = max(int(target_slice_np.max()), int(pred_slice_np.max()))
+    num_palette_colors = max(max_class_value + 1, 2)
+    mask_cmap = plt.cm.get_cmap('tab20', num_palette_colors)
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    axes[0].imshow(img_norm, cmap='gray')
+    axes[0].set_title("Input (mid slice)")
+    axes[0].axis('off')
+
+    overlays = [
+        (target_slice_np, "Ground Truth Mask"),
+        (pred_slice_np, "Predicted Mask"),
+    ]
+    for ax, (mask, title) in zip(axes[1:], overlays):
+        ax.imshow(img_norm, cmap='gray')
+        ax.imshow(
+            mask,
+            cmap=mask_cmap,
+            alpha=overlay_alpha,
+            vmin=0,
+            vmax=num_palette_colors - 1,
+        )
+        ax.set_title(title)
+        ax.axis('off')
+
+    fig.suptitle(f"Epoch {epoch_idx} — Dice: {sample_dice:.4f}")
+    fig.tight_layout()
+
+    if preview_dir is not None:
+        ensure_dir(preview_dir)
+        filename = f"epoch_{epoch_idx:04d}_sample_{sample_idx:02d}.png"
+        save_path = os.path.join(preview_dir, filename)
+        fig.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f"[Epoch {epoch_idx}] Preview saved to {save_path}")
+
+    if show_plot:
+        plt.show(block=False)
+        plt.pause(0.001)
+
+    plt.close(fig)
+
     if was_training:
-            model.train()
+        model.train()
 
 train_loader, val_loader = build_dataloaders(train_gen, val_gen, num_workers=0)
 batch = next(iter(train_loader))
