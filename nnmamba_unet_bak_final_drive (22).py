@@ -1377,22 +1377,14 @@ class VisualizePredictions(tf.keras.callbacks.Callback):
         true_mask = np.argmax(sample_mask, axis=-1)
         pred_mask = np.argmax(pred, axis=-1)
         slice_idx = sample_img.shape[3] // 2
-        num_windows = sample_img.shape[-1]
-        total_plots = num_windows + 2
 
-        plt.figure(figsize=(4 * total_plots, 5))
-        for w in range(num_windows):
-            plt.subplot(1, total_plots, w + 1)
-            plt.imshow(sample_img[0, :, :, slice_idx, w], cmap='gray')
-            plt.title(f"Val Window {w + 1}")
-            plt.axis('off')
-
-        plt.subplot(1, total_plots, num_windows + 1)
+        plt.figure(figsize=(8, 4))
+        plt.subplot(1, 2, 1)
         plt.imshow(true_mask[0, :, :, slice_idx], cmap='gray')
         plt.title("Val Ground Truth")
         plt.axis('off')
 
-        plt.subplot(1, total_plots, num_windows + 2)
+        plt.subplot(1, 2, 2)
         plt.imshow(pred_mask[0, :, :, slice_idx], cmap='jet')
         plt.title(f"Val Prediction\nDice: {dice_score:.4f}")
         plt.axis('off')
@@ -1418,29 +1410,17 @@ class VisualizeTrainPredictions(tf.keras.callbacks.Callback):
 
         # Use the depth dimension (axis 3) to choose a mid-slice
         slice_idx = sample_img.shape[3] // 2
-        # Determine the number of window channels (last dimension)
-        num_windows = sample_img.shape[-1]
 
-        # Total subplots: one for each window plus ground truth and prediction
-        total_plots = num_windows + 2
-
-        plt.figure(figsize=(4 * total_plots, 5))
-
-        # Plot each window channel of the training image
-        for w in range(num_windows):
-            plt.subplot(1, total_plots, w + 1)
-            plt.imshow(sample_img[0, :, :, slice_idx, w], cmap='gray')
-            plt.title(f"Train Window {w+1}")
-            plt.axis('off')
+        plt.figure(figsize=(8, 4))
 
         # Plot training ground truth
-        plt.subplot(1, total_plots, num_windows + 1)
+        plt.subplot(1, 2, 1)
         plt.imshow(true_mask[0, :, :, slice_idx], cmap='gray')
         plt.title("Train Ground Truth")
         plt.axis('off')
 
         # Plot training prediction
-        plt.subplot(1, total_plots, num_windows + 2)
+        plt.subplot(1, 2, 2)
         plt.imshow(pred_mask[0, :, :, slice_idx], cmap='jet')
         plt.title("Train Prediction")
         plt.axis('off')
@@ -2931,14 +2911,24 @@ def show_mid_slice_preview(
 
     print(f"[Epoch {epoch_idx}] Preview dice={sample_dice:.4f}")
     print("[Epoch {0}] Input mid-slice stats -> min: {1:.4f}, max: {2:.4f}".format(epoch_idx, float(img_norm.min()), float(img_norm.max())))
-    print(f"[Epoch {epoch_idx}] Ground truth mask (mid slice):")
-    print(target_slice_np)
-    print(f"[Epoch {epoch_idx}] Predicted mask (mid slice):")
-    print(pred_slice_np)
 
     gt_classes = np.unique(target_slice_np).tolist()
     pred_classes = np.unique(pred_slice_np).tolist()
     print(f"    classes gt={gt_classes} pred={pred_classes}")
+
+    fig, axes = plt.subplots(1, 2, figsize=(8, 4))
+    axes[0].imshow(target_slice_np, cmap='gray')
+    axes[0].set_title("Ground truth (mid slice)")
+    axes[0].axis('off')
+
+    axes[1].imshow(pred_slice_np, cmap='jet')
+    axes[1].set_title("Prediction (mid slice)")
+    axes[1].axis('off')
+
+    fig.tight_layout()
+    fig.subplots_adjust(top=0.85)
+    fig.suptitle(f"Epoch {epoch_idx} preview (dice={sample_dice:.4f})")
+    plt.show()
 
     if was_training:
             model.train()
