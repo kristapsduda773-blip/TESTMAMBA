@@ -268,6 +268,26 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+FORCE_INTERNAL_MAMBA = os.environ.get("FORCE_INTERNAL_MAMBA", "0") == "1"
+try:
+    from mamba_ssm import Mamba as ExternalMamba
+    _external_mamba_available = True
+except ImportError:
+    ExternalMamba = None
+    _external_mamba_available = False
+
+USE_EXTERNAL_MAMBA = _external_mamba_available and not FORCE_INTERNAL_MAMBA
+if USE_EXTERNAL_MAMBA:
+    print("Using mamba-ssm backend for Tri-Oriented blocks.")
+else:
+    if _external_mamba_available and FORCE_INTERNAL_MAMBA:
+        print("FORCE_INTERNAL_MAMBA=1 -> using internal Mamba fallback.")
+    else:
+        print(
+            "mamba-ssm not available; defaulting to InternalMamba. "
+            "Install the official wheels for maximum performance."
+        )
+
 class InternalSSM(nn.Module):
     """
     Lightweight "SSM-like" module implemented with pure PyTorch.
@@ -1518,12 +1538,17 @@ class InternalSSM(nn.Module):
 
 class InternalMamba(nn.Module):
     """
-    Small wrapper that matches expected Mamba interface sufficiently:
+    Small wrapper that matches the Mamba interface:
     accepts (N, L, C) and returns (N, L, C).
     """
-    def __init__(self, d_model: int, kernel_size: int = 9, expand: int = 2):
+    def __init__(self, d_model: int, d_state: int = 64, kernel_size: int = 9, expand: int = 2):
         super().__init__()
-        self.ssm = InternalSSM(d_model=d_model, kernel_size=kernel_size, expand=expand)
+        self.ssm = InternalSSM(
+            d_model=d_model,
+            d_state=d_state,
+            kernel_size=kernel_size,
+            expand=expand
+        )
         self.ff = nn.Sequential(
             nn.Linear(d_model, d_model * 2),
             nn.GELU(),
@@ -1540,55 +1565,75 @@ class InternalMamba(nn.Module):
 # -------------------------
 class TriOrientedMambaBlock_NoExt(nn.Module):
     """
-    Tri-oriented mixture block using InternalMamba for three orientations.
-    Input x: (N, C, D, H, W)
-    Output: (N, C, D, H, W) (residual)
+    Tri-oriented block that prefers the official mamba-ssm kernels when available,
+    but automatically falls back to InternalMamba for environments without the
+    custom CUDA ops (or when FORCE_INTERNAL_MAMBA=1).
+    Input x: (N, C, D, H, W) -> Output shape identical (residual block).
     """
-    def __init__(self, channels: int, ssm_dim: int = 64, dropout_rate: float = 0.1,
-                 kernel_size: int = 9, expand: int = 2):
+
+    def __init__(
+        self,
+        channels: int,
+        ssm_dim: int = 64,
+        dropout_rate: float = 0.1,
+        kernel_size: int = 9,
+        expand: int = 2,
+        prefer_external: bool = True,
+    ):
         super().__init__()
         self.channels = channels
-        # Use InternalMamba instances (one per orientation)
-        self.mamba_forward = InternalMamba(d_model=channels, kernel_size=kernel_size, expand=expand)
-        self.mamba_width   = InternalMamba(d_model=channels, kernel_size=kernel_size, expand=expand)
-        self.mamba_depth   = InternalMamba(d_model=channels, kernel_size=kernel_size, expand=expand)
+        self.use_external = prefer_external and USE_EXTERNAL_MAMBA
+
+        def build_backend():
+            if self.use_external and ExternalMamba is not None:
+                return ExternalMamba(
+                    d_model=channels,
+                    d_state=ssm_dim,
+                    d_conv=kernel_size,
+                    expand=expand,
+                )
+            return InternalMamba(
+                d_model=channels,
+                d_state=ssm_dim,
+                kernel_size=kernel_size,
+                expand=expand,
+            )
+
+        self.mamba_forward = build_backend()
+        self.mamba_width = build_backend()
+        self.mamba_depth = build_backend()
 
         self.norm = nn.InstanceNorm3d(channels, affine=True)
         self.dropout = nn.Dropout3d(p=dropout_rate)
         self.act = nn.GELU()
 
-    def _apply_internal(self, x: torch.Tensor, mamba: InternalMamba) -> torch.Tensor:
-        # x: (N, C, D, H, W) -> flatten to (N, L, C)
+    def _apply_operator(self, x: torch.Tensor, operator: nn.Module) -> torch.Tensor:
         N, C, D, H, W = x.shape
-        seq = x.permute(0, 2, 3, 4, 1).contiguous().view(N, D * H * W, C)  # (N, L, C)
-        out = mamba(seq)  # (N, L, C)
-        out = out.view(N, D, H, W, C).permute(0, 4, 1, 2, 3).contiguous()  # (N, C, D, H, W)
-        return out
+        seq = x.permute(0, 2, 3, 4, 1).contiguous().view(N, D * H * W, C)
+        out = operator(seq)
+        return out.view(N, D, H, W, C).permute(0, 4, 1, 2, 3).contiguous()
 
-    def _apply_internal_swapped(self, x: torch.Tensor, mamba: InternalMamba, swap: str) -> torch.Tensor:
-        # swap orientations similar to original scheme
-        if swap == "hw":  # swap H and W
-            x_sw = x.permute(0, 1, 2, 4, 3).contiguous()     # (N, C, D, W, H)
-            y_sw = self._apply_internal(x_sw, mamba)         # (N, C, D, W, H)
-            return y_sw.permute(0, 1, 2, 4, 3).contiguous()  # back to (N, C, D, H, W)
-        elif swap == "dh":  # depth-first orientation
-            # bring D to last, then treat as spatial flattening then permute back
-            x_sw = x.permute(0, 1, 3, 4, 2).contiguous()     # (N, C, H, W, D)
-            x_sw = x_sw.permute(0, 1, 4, 2, 3).contiguous()  # (N, C, D, H, W)
-            return self._apply_internal(x_sw, mamba)
-        else:
-            return self._apply_internal(x, mamba)
+    def _apply_operator_swapped(self, x: torch.Tensor, operator: nn.Module, swap: str) -> torch.Tensor:
+        if swap == "hw":
+            x_sw = x.permute(0, 1, 2, 4, 3).contiguous()
+            y_sw = self._apply_operator(x_sw, operator)
+            return y_sw.permute(0, 1, 2, 4, 3).contiguous()
+        if swap == "dh":
+            x_sw = x.permute(0, 1, 3, 4, 2).contiguous()
+            x_sw = x_sw.permute(0, 1, 4, 2, 3).contiguous()
+            return self._apply_operator(x_sw, operator)
+        return self._apply_operator(x, operator)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        y_f = self._apply_internal(x, self.mamba_forward)
-        y_w = self._apply_internal_swapped(x, self.mamba_width, swap="hw")
-        y_d = self._apply_internal_swapped(x, self.mamba_depth, swap="dh")
+        y_f = self._apply_operator(x, self.mamba_forward)
+        y_w = self._apply_operator_swapped(x, self.mamba_width, swap="hw")
+        y_d = self._apply_operator_swapped(x, self.mamba_depth, swap="dh")
 
         y = (y_f + y_w + y_d) / 3.0
         y = self.norm(y)
         y = self.act(y)
         y = self.dropout(y)
-        return x + y  # residual
+        return x + y
 
 # -------------------------
 # Convolution + Norm + Activation block
