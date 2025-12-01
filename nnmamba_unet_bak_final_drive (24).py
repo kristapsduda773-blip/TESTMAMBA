@@ -132,6 +132,7 @@ os.makedirs(TEST_PREVIEW_DIR, exist_ok=True)
 
 MODEL_SAVE_PATH = os.path.join(CHECKPOINT_DIR, "best_model_dice_Mamba1000.keras")
 MODEL_CONTINUE_PATH = os.path.join(CHECKPOINT_DIR, "continued_model_Mamba1000.keras")
+TRAINING_STATE_PATH = os.path.join(CHECKPOINT_DIR, "training_state_latest.pt")
 
 # # Tri-Oriented Mamba SSM 3D U-Net blocks (PyTorch)
 # import torch
@@ -2734,6 +2735,45 @@ import copy
 def ensure_dir(path: str):
     os.makedirs(path, exist_ok=True)
 
+
+def _clone_history(history_dict):
+    return {k: list(v) for k, v in history_dict.items()}
+
+
+def save_training_state(
+    path,
+    epoch,
+    model,
+    optimizer,
+    scheduler,
+    scaler,
+    history,
+    best_val,
+    best_state,
+    no_improve,
+):
+    state = {
+        "epoch": epoch,
+        "model_state": model.state_dict(),
+        "optimizer_state": optimizer.state_dict(),
+        "scheduler_state": scheduler.state_dict(),
+        "history": _clone_history(history),
+        "best_val": best_val,
+        "best_model_state": best_state,
+        "no_improve": no_improve,
+    }
+    if scaler is not None:
+        state["scaler_state"] = scaler.state_dict()
+    torch.save(state, path)
+
+
+def load_training_state(path, device, scaler=None):
+    checkpoint = torch.load(path, map_location=device)
+    scaler_state = checkpoint.get("scaler_state")
+    if scaler is not None and scaler_state is not None:
+        scaler.load_state_dict(scaler_state)
+    return checkpoint
+
 def train_epoch(model, loader, optimizer, scheduler, device, class_weights, alpha=0.7, scaler=None):
     model.train()
     epoch_loss = 0.0
@@ -2796,6 +2836,8 @@ def fit_pytorch_mamba(
     class_weights_list=CLASS_WEIGHT_TUPLE,
     device_str=None,
     preview_gen=None,
+    resume=False,
+    state_path=TRAINING_STATE_PATH,
 ):
     ensure_dir(save_dir)
     device = torch.device(device_str or ('cuda' if torch.cuda.is_available() else 'cpu'))
@@ -2828,10 +2870,27 @@ def fit_pytorch_mamba(
     best_val = float('inf')
     best_state = None
     no_improve = 0
-
     history = { 'loss': [], 'val_loss': [], 'dice': [], 'val_dice': [], 'lr': [] }
+    start_epoch = 0
+    training_state_path = state_path or os.path.join(save_dir, "training_state_latest.pt")
 
-    for epoch in range(num_epochs):
+    if resume and os.path.exists(training_state_path):
+        checkpoint = load_training_state(training_state_path, device, scaler)
+        print(f"Resuming training from checkpoint: {training_state_path}")
+        model.load_state_dict(checkpoint["model_state"])
+        optimizer.load_state_dict(checkpoint["optimizer_state"])
+        scheduler.load_state_dict(checkpoint["scheduler_state"])
+        history = checkpoint.get("history", history)
+        best_val = checkpoint.get("best_val", best_val)
+        best_state = checkpoint.get("best_model_state", best_state)
+        no_improve = checkpoint.get("no_improve", 0)
+        start_epoch = checkpoint.get("epoch", 0)
+        if best_state is not None:
+            model.load_state_dict(best_state)
+    elif resume:
+        print(f"Resume requested but checkpoint not found at {training_state_path}. Starting fresh.")
+
+    for epoch in range(start_epoch, num_epochs):
         train_loss, train_dice = train_epoch(
             model,
             train_loader,
@@ -2875,6 +2934,18 @@ def fit_pytorch_mamba(
                 print(f"Early stopping at epoch {epoch+1}")
                 break
         print(f"   epochs without val improvement: {no_improve}")
+        save_training_state(
+            training_state_path,
+            epoch + 1,
+            model,
+            optimizer,
+            scheduler,
+            scaler,
+            history,
+            best_val,
+            best_state,
+            no_improve,
+        )
         # Load best
         if best_state is not None:
             model.load_state_dict(best_state)
@@ -2896,6 +2967,8 @@ def parse_cli_args():
                         help="Half-cycle length for the CLR scheduler.")
     parser.add_argument("--device", type=str, default=None,
                         help="Torch device string override, e.g. cuda:0 or cpu.")
+    parser.add_argument("--resume", action="store_true",
+                        help="Resume training from the latest checkpoint if available.")
     return parser.parse_args()
 
 
@@ -3139,6 +3212,8 @@ def main():
         class_weights_list=CLASS_WEIGHT_TUPLE,
         device_str=args.device,
         preview_gen=val_gen,
+        resume=args.resume,
+        state_path=TRAINING_STATE_PATH,
     )
 
     save_prediction_gallery(
