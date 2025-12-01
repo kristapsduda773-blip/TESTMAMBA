@@ -1495,9 +1495,10 @@ class InternalSSM(nn.Module):
     Output: (N, L, C)
     - Projects to expanded channels, uses depthwise Conv1d (causal), gating, projection back.
     """
-    def __init__(self, d_model: int, kernel_size: int = 9, expand: int = 2):
+    def __init__(self, d_model: int, d_state: int = 64, kernel_size: int = 9, expand: int = 2):
         super().__init__()
         self.d_model = d_model
+        self.d_state = d_state
         self.expand = expand
         mid = d_model * expand
 
