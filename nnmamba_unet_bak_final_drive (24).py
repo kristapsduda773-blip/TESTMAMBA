@@ -132,6 +132,7 @@ os.makedirs(TEST_PREVIEW_DIR, exist_ok=True)
 
 MODEL_SAVE_PATH = os.path.join(CHECKPOINT_DIR, "best_model_dice_Mamba1000.keras")
 MODEL_CONTINUE_PATH = os.path.join(CHECKPOINT_DIR, "continued_model_Mamba1000.keras")
+TRAINING_STATE_PATH = os.path.join(CHECKPOINT_DIR, "training_state_latest.pt")
 
 # # Tri-Oriented Mamba SSM 3D U-Net blocks (PyTorch)
 # import torch
@@ -267,6 +268,26 @@ MODEL_CONTINUE_PATH = os.path.join(CHECKPOINT_DIR, "continued_model_Mamba1000.ke
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+FORCE_INTERNAL_MAMBA = os.environ.get("FORCE_INTERNAL_MAMBA", "0") == "1"
+try:
+    from mamba_ssm import Mamba as ExternalMamba
+    _external_mamba_available = True
+except ImportError:
+    ExternalMamba = None
+    _external_mamba_available = False
+
+USE_EXTERNAL_MAMBA = _external_mamba_available and not FORCE_INTERNAL_MAMBA
+if USE_EXTERNAL_MAMBA:
+    print("Using mamba-ssm backend for Tri-Oriented blocks.")
+else:
+    if _external_mamba_available and FORCE_INTERNAL_MAMBA:
+        print("FORCE_INTERNAL_MAMBA=1 -> using internal Mamba fallback.")
+    else:
+        print(
+            "mamba-ssm not available; defaulting to InternalMamba. "
+            "Install the official wheels for maximum performance."
+        )
 
 class InternalSSM(nn.Module):
     """
@@ -1475,9 +1496,10 @@ class InternalSSM(nn.Module):
     Output: (N, L, C)
     - Projects to expanded channels, uses depthwise Conv1d (causal), gating, projection back.
     """
-    def __init__(self, d_model: int, kernel_size: int = 9, expand: int = 2):
+    def __init__(self, d_model: int, d_state: int = 64, kernel_size: int = 9, expand: int = 2):
         super().__init__()
         self.d_model = d_model
+        self.d_state = d_state
         self.expand = expand
         mid = d_model * expand
 
@@ -1518,12 +1540,17 @@ class InternalSSM(nn.Module):
 
 class InternalMamba(nn.Module):
     """
-    Small wrapper that matches expected Mamba interface sufficiently:
+    Small wrapper that matches the Mamba interface:
     accepts (N, L, C) and returns (N, L, C).
     """
-    def __init__(self, d_model: int, kernel_size: int = 9, expand: int = 2):
+    def __init__(self, d_model: int, d_state: int = 64, kernel_size: int = 9, expand: int = 2):
         super().__init__()
-        self.ssm = InternalSSM(d_model=d_model, kernel_size=kernel_size, expand=expand)
+        self.ssm = InternalSSM(
+            d_model=d_model,
+            d_state=d_state,
+            kernel_size=kernel_size,
+            expand=expand
+        )
         self.ff = nn.Sequential(
             nn.Linear(d_model, d_model * 2),
             nn.GELU(),
@@ -1540,55 +1567,75 @@ class InternalMamba(nn.Module):
 # -------------------------
 class TriOrientedMambaBlock_NoExt(nn.Module):
     """
-    Tri-oriented mixture block using InternalMamba for three orientations.
-    Input x: (N, C, D, H, W)
-    Output: (N, C, D, H, W) (residual)
+    Tri-oriented block that prefers the official mamba-ssm kernels when available,
+    but automatically falls back to InternalMamba for environments without the
+    custom CUDA ops (or when FORCE_INTERNAL_MAMBA=1).
+    Input x: (N, C, D, H, W) -> Output shape identical (residual block).
     """
-    def __init__(self, channels: int, ssm_dim: int = 64, dropout_rate: float = 0.1,
-                 kernel_size: int = 9, expand: int = 2):
+
+    def __init__(
+        self,
+        channels: int,
+        ssm_dim: int = 64,
+        dropout_rate: float = 0.1,
+        kernel_size: int = 9,
+        expand: int = 2,
+        prefer_external: bool = True,
+    ):
         super().__init__()
         self.channels = channels
-        # Use InternalMamba instances (one per orientation)
-        self.mamba_forward = InternalMamba(d_model=channels, kernel_size=kernel_size, expand=expand)
-        self.mamba_width   = InternalMamba(d_model=channels, kernel_size=kernel_size, expand=expand)
-        self.mamba_depth   = InternalMamba(d_model=channels, kernel_size=kernel_size, expand=expand)
+        self.use_external = prefer_external and USE_EXTERNAL_MAMBA
+
+        def build_backend():
+            if self.use_external and ExternalMamba is not None:
+                return ExternalMamba(
+                    d_model=channels,
+                    d_state=ssm_dim,
+                    d_conv=kernel_size,
+                    expand=expand,
+                )
+            return InternalMamba(
+                d_model=channels,
+                d_state=ssm_dim,
+                kernel_size=kernel_size,
+                expand=expand,
+            )
+
+        self.mamba_forward = build_backend()
+        self.mamba_width = build_backend()
+        self.mamba_depth = build_backend()
 
         self.norm = nn.InstanceNorm3d(channels, affine=True)
         self.dropout = nn.Dropout3d(p=dropout_rate)
         self.act = nn.GELU()
 
-    def _apply_internal(self, x: torch.Tensor, mamba: InternalMamba) -> torch.Tensor:
-        # x: (N, C, D, H, W) -> flatten to (N, L, C)
+    def _apply_operator(self, x: torch.Tensor, operator: nn.Module) -> torch.Tensor:
         N, C, D, H, W = x.shape
-        seq = x.permute(0, 2, 3, 4, 1).contiguous().view(N, D * H * W, C)  # (N, L, C)
-        out = mamba(seq)  # (N, L, C)
-        out = out.view(N, D, H, W, C).permute(0, 4, 1, 2, 3).contiguous()  # (N, C, D, H, W)
-        return out
+        seq = x.permute(0, 2, 3, 4, 1).contiguous().view(N, D * H * W, C)
+        out = operator(seq)
+        return out.view(N, D, H, W, C).permute(0, 4, 1, 2, 3).contiguous()
 
-    def _apply_internal_swapped(self, x: torch.Tensor, mamba: InternalMamba, swap: str) -> torch.Tensor:
-        # swap orientations similar to original scheme
-        if swap == "hw":  # swap H and W
-            x_sw = x.permute(0, 1, 2, 4, 3).contiguous()     # (N, C, D, W, H)
-            y_sw = self._apply_internal(x_sw, mamba)         # (N, C, D, W, H)
-            return y_sw.permute(0, 1, 2, 4, 3).contiguous()  # back to (N, C, D, H, W)
-        elif swap == "dh":  # depth-first orientation
-            # bring D to last, then treat as spatial flattening then permute back
-            x_sw = x.permute(0, 1, 3, 4, 2).contiguous()     # (N, C, H, W, D)
-            x_sw = x_sw.permute(0, 1, 4, 2, 3).contiguous()  # (N, C, D, H, W)
-            return self._apply_internal(x_sw, mamba)
-        else:
-            return self._apply_internal(x, mamba)
+    def _apply_operator_swapped(self, x: torch.Tensor, operator: nn.Module, swap: str) -> torch.Tensor:
+        if swap == "hw":
+            x_sw = x.permute(0, 1, 2, 4, 3).contiguous()
+            y_sw = self._apply_operator(x_sw, operator)
+            return y_sw.permute(0, 1, 2, 4, 3).contiguous()
+        if swap == "dh":
+            x_sw = x.permute(0, 1, 3, 4, 2).contiguous()
+            x_sw = x_sw.permute(0, 1, 4, 2, 3).contiguous()
+            return self._apply_operator(x_sw, operator)
+        return self._apply_operator(x, operator)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        y_f = self._apply_internal(x, self.mamba_forward)
-        y_w = self._apply_internal_swapped(x, self.mamba_width, swap="hw")
-        y_d = self._apply_internal_swapped(x, self.mamba_depth, swap="dh")
+        y_f = self._apply_operator(x, self.mamba_forward)
+        y_w = self._apply_operator_swapped(x, self.mamba_width, swap="hw")
+        y_d = self._apply_operator_swapped(x, self.mamba_depth, swap="dh")
 
         y = (y_f + y_w + y_d) / 3.0
         y = self.norm(y)
         y = self.act(y)
         y = self.dropout(y)
-        return x + y  # residual
+        return x + y
 
 # -------------------------
 # Convolution + Norm + Activation block
@@ -2688,6 +2735,45 @@ import copy
 def ensure_dir(path: str):
     os.makedirs(path, exist_ok=True)
 
+
+def _clone_history(history_dict):
+    return {k: list(v) for k, v in history_dict.items()}
+
+
+def save_training_state(
+    path,
+    epoch,
+    model,
+    optimizer,
+    scheduler,
+    scaler,
+    history,
+    best_val,
+    best_state,
+    no_improve,
+):
+    state = {
+        "epoch": epoch,
+        "model_state": model.state_dict(),
+        "optimizer_state": optimizer.state_dict(),
+        "scheduler_state": scheduler.state_dict(),
+        "history": _clone_history(history),
+        "best_val": best_val,
+        "best_model_state": best_state,
+        "no_improve": no_improve,
+    }
+    if scaler is not None:
+        state["scaler_state"] = scaler.state_dict()
+    torch.save(state, path)
+
+
+def load_training_state(path, device, scaler=None):
+    checkpoint = torch.load(path, map_location=device)
+    scaler_state = checkpoint.get("scaler_state")
+    if scaler is not None and scaler_state is not None:
+        scaler.load_state_dict(scaler_state)
+    return checkpoint
+
 def train_epoch(model, loader, optimizer, scheduler, device, class_weights, alpha=0.7, scaler=None):
     model.train()
     epoch_loss = 0.0
@@ -2750,6 +2836,8 @@ def fit_pytorch_mamba(
     class_weights_list=CLASS_WEIGHT_TUPLE,
     device_str=None,
     preview_gen=None,
+    resume=False,
+    state_path=TRAINING_STATE_PATH,
 ):
     ensure_dir(save_dir)
     device = torch.device(device_str or ('cuda' if torch.cuda.is_available() else 'cpu'))
@@ -2782,10 +2870,27 @@ def fit_pytorch_mamba(
     best_val = float('inf')
     best_state = None
     no_improve = 0
-
     history = { 'loss': [], 'val_loss': [], 'dice': [], 'val_dice': [], 'lr': [] }
+    start_epoch = 0
+    training_state_path = state_path or os.path.join(save_dir, "training_state_latest.pt")
 
-    for epoch in range(num_epochs):
+    if resume and os.path.exists(training_state_path):
+        checkpoint = load_training_state(training_state_path, device, scaler)
+        print(f"Resuming training from checkpoint: {training_state_path}")
+        model.load_state_dict(checkpoint["model_state"])
+        optimizer.load_state_dict(checkpoint["optimizer_state"])
+        scheduler.load_state_dict(checkpoint["scheduler_state"])
+        history = checkpoint.get("history", history)
+        best_val = checkpoint.get("best_val", best_val)
+        best_state = checkpoint.get("best_model_state", best_state)
+        no_improve = checkpoint.get("no_improve", 0)
+        start_epoch = checkpoint.get("epoch", 0)
+        if best_state is not None:
+            model.load_state_dict(best_state)
+    elif resume:
+        print(f"Resume requested but checkpoint not found at {training_state_path}. Starting fresh.")
+
+    for epoch in range(start_epoch, num_epochs):
         train_loss, train_dice = train_epoch(
             model,
             train_loader,
@@ -2829,6 +2934,18 @@ def fit_pytorch_mamba(
                 print(f"Early stopping at epoch {epoch+1}")
                 break
         print(f"   epochs without val improvement: {no_improve}")
+        save_training_state(
+            training_state_path,
+            epoch + 1,
+            model,
+            optimizer,
+            scheduler,
+            scaler,
+            history,
+            best_val,
+            best_state,
+            no_improve,
+        )
         # Load best
         if best_state is not None:
             model.load_state_dict(best_state)
@@ -2850,6 +2967,8 @@ def parse_cli_args():
                         help="Half-cycle length for the CLR scheduler.")
     parser.add_argument("--device", type=str, default=None,
                         help="Torch device string override, e.g. cuda:0 or cpu.")
+    parser.add_argument("--resume", action="store_true",
+                        help="Resume training from the latest checkpoint if available.")
     return parser.parse_args()
 
 
@@ -2995,10 +3114,80 @@ def show_mid_slice_preview(
         plt.show(block=False)
         plt.pause(0.001)
 
+    if preview_dir:
+        ensure_dir(preview_dir)
+        out_path = os.path.join(preview_dir, f"epoch_{epoch_idx:04d}_dice_{sample_dice:.4f}.png")
+        fig.savefig(out_path, dpi=150, bbox_inches='tight')
+
     plt.close(fig)
 
     if was_training:
         model.train()
+
+def save_prediction_gallery(model, generator, output_dir, num_samples=3, use_tta=True):
+    """
+    Runs inference on a few generator samples and saves overlay figures to disk.
+    """
+    if generator is None or len(generator) == 0:
+        print("Skipping prediction gallery; generator is empty.")
+        return
+
+    ensure_dir(output_dir)
+    device = next(model.parameters()).device
+    identity = lambda arr: arr
+    tta_transforms = [
+        identity,
+        lambda arr: np.flip(arr, axis=1),
+        lambda arr: np.flip(arr, axis=2),
+        lambda arr: np.flip(np.flip(arr, axis=1), axis=2),
+    ] if use_tta else [identity]
+
+    def run_model(batch_np):
+        tensor = torch.from_numpy(batch_np).permute(0, 4, 3, 1, 2).contiguous().float().to(device)
+        with torch.no_grad():
+            logits = model(tensor)
+            probs = torch.softmax(logits, dim=1).permute(0, 3, 4, 2, 1).cpu().numpy()
+        return probs
+
+    total = min(num_samples, len(generator))
+    for sample_idx in range(total):
+        imgs, masks = generator[sample_idx]
+        if imgs.size == 0:
+            continue
+
+        preds = []
+        for transform in tta_transforms:
+            aug_imgs = transform(imgs.copy())
+            pred_aug = run_model(aug_imgs)
+            preds.append(transform(pred_aug))
+        pred = np.mean(preds, axis=0)
+
+        img = imgs[0]
+        mask = masks[0]
+        pred_mask = pred[0]
+        slice_idx = img.shape[2] // 2
+
+        fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+        axes[0].imshow(img[:, :, slice_idx, 0], cmap='gray')
+        axes[0].set_title("Input")
+        axes[0].axis('off')
+
+        axes[1].imshow(np.argmax(mask, axis=-1)[:, :, slice_idx], cmap='tab20')
+        axes[1].set_title("Ground Truth")
+        axes[1].axis('off')
+
+        axes[2].imshow(np.argmax(pred_mask, axis=-1)[:, :, slice_idx], cmap='jet')
+        axes[2].set_title("Prediction")
+        axes[2].axis('off')
+
+        fig.suptitle(f"Sample {sample_idx} — slice {slice_idx}")
+        fig.tight_layout()
+        fig.savefig(
+            os.path.join(output_dir, f"sample_{sample_idx:03d}.png"),
+            dpi=150,
+            bbox_inches='tight'
+        )
+        plt.close(fig)
 
 train_loader, val_loader = build_dataloaders(train_gen, val_gen, num_workers=0)
 batch = next(iter(train_loader))
@@ -3023,6 +3212,16 @@ def main():
         class_weights_list=CLASS_WEIGHT_TUPLE,
         device_str=args.device,
         preview_gen=val_gen,
+        resume=args.resume,
+        state_path=TRAINING_STATE_PATH,
+    )
+
+    save_prediction_gallery(
+        model,
+        test_gen,
+        TEST_PREVIEW_DIR,
+        num_samples=min(5, len(test_gen)),
+        use_tta=True,
     )
 
     val_history = history.get('val_loss', [])
