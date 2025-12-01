@@ -3040,10 +3040,80 @@ def show_mid_slice_preview(
         plt.show(block=False)
         plt.pause(0.001)
 
+    if preview_dir:
+        ensure_dir(preview_dir)
+        out_path = os.path.join(preview_dir, f"epoch_{epoch_idx:04d}_dice_{sample_dice:.4f}.png")
+        fig.savefig(out_path, dpi=150, bbox_inches='tight')
+
     plt.close(fig)
 
     if was_training:
         model.train()
+
+def save_prediction_gallery(model, generator, output_dir, num_samples=3, use_tta=True):
+    """
+    Runs inference on a few generator samples and saves overlay figures to disk.
+    """
+    if generator is None or len(generator) == 0:
+        print("Skipping prediction gallery; generator is empty.")
+        return
+
+    ensure_dir(output_dir)
+    device = next(model.parameters()).device
+    identity = lambda arr: arr
+    tta_transforms = [
+        identity,
+        lambda arr: np.flip(arr, axis=1),
+        lambda arr: np.flip(arr, axis=2),
+        lambda arr: np.flip(np.flip(arr, axis=1), axis=2),
+    ] if use_tta else [identity]
+
+    def run_model(batch_np):
+        tensor = torch.from_numpy(batch_np).permute(0, 4, 3, 1, 2).contiguous().float().to(device)
+        with torch.no_grad():
+            logits = model(tensor)
+            probs = torch.softmax(logits, dim=1).permute(0, 3, 4, 2, 1).cpu().numpy()
+        return probs
+
+    total = min(num_samples, len(generator))
+    for sample_idx in range(total):
+        imgs, masks = generator[sample_idx]
+        if imgs.size == 0:
+            continue
+
+        preds = []
+        for transform in tta_transforms:
+            aug_imgs = transform(imgs.copy())
+            pred_aug = run_model(aug_imgs)
+            preds.append(transform(pred_aug))
+        pred = np.mean(preds, axis=0)
+
+        img = imgs[0]
+        mask = masks[0]
+        pred_mask = pred[0]
+        slice_idx = img.shape[2] // 2
+
+        fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+        axes[0].imshow(img[:, :, slice_idx, 0], cmap='gray')
+        axes[0].set_title("Input")
+        axes[0].axis('off')
+
+        axes[1].imshow(np.argmax(mask, axis=-1)[:, :, slice_idx], cmap='tab20')
+        axes[1].set_title("Ground Truth")
+        axes[1].axis('off')
+
+        axes[2].imshow(np.argmax(pred_mask, axis=-1)[:, :, slice_idx], cmap='jet')
+        axes[2].set_title("Prediction")
+        axes[2].axis('off')
+
+        fig.suptitle(f"Sample {sample_idx} — slice {slice_idx}")
+        fig.tight_layout()
+        fig.savefig(
+            os.path.join(output_dir, f"sample_{sample_idx:03d}.png"),
+            dpi=150,
+            bbox_inches='tight'
+        )
+        plt.close(fig)
 
 train_loader, val_loader = build_dataloaders(train_gen, val_gen, num_workers=0)
 batch = next(iter(train_loader))
@@ -3068,6 +3138,14 @@ def main():
         class_weights_list=CLASS_WEIGHT_TUPLE,
         device_str=args.device,
         preview_gen=val_gen,
+    )
+
+    save_prediction_gallery(
+        model,
+        test_gen,
+        TEST_PREVIEW_DIR,
+        num_samples=min(5, len(test_gen)),
+        use_tta=True,
     )
 
     val_history = history.get('val_loss', [])
