@@ -2734,8 +2734,10 @@ import time
 import copy
 
 PYTORCH_CHECKPOINT_NAME = "best_model_mamba_pytorch.pt"
+PYTORCH_LATEST_CHECKPOINT_NAME = "latest_model_mamba_pytorch.pt"
 PYTORCH_HISTORY_PATH = os.path.join(CHECKPOINT_DIR, "pytorch_training_history.pkl")
 PYTORCH_CHECKPOINT_PATH = os.path.join(CHECKPOINT_DIR, PYTORCH_CHECKPOINT_NAME)
+PYTORCH_LATEST_CHECKPOINT_PATH = os.path.join(CHECKPOINT_DIR, PYTORCH_LATEST_CHECKPOINT_NAME)
 
 def ensure_dir(path: str):
     os.makedirs(path, exist_ok=True)
@@ -2799,6 +2801,7 @@ def fit_pytorch_mamba(
     step_size=670,
     save_dir='/content/drive/MyDrive/Unet_checkpoints',
     save_name=PYTORCH_CHECKPOINT_NAME,
+    latest_save_name=PYTORCH_LATEST_CHECKPOINT_NAME,
     class_weights_list=CLASS_WEIGHT_TUPLE,
     device_str=None,
     preview_gen=None,
@@ -2874,7 +2877,9 @@ def fit_pytorch_mamba(
         print(f"Start epoch {start_epoch} >= requested total {num_epochs}; skipping training.")
         return model, history
 
+    stop_requested = False
     for epoch in range(start_epoch, num_epochs):
+        stop_requested = False
         train_loss, train_dice = train_epoch(
             model,
             train_loader,
@@ -2913,6 +2918,8 @@ def fit_pytorch_mamba(
                 preview_dir=preview_output_dir,
             )
 
+        current_state = copy.deepcopy(model.state_dict())
+
         if val_loss < best_val:
             best_val = val_loss
             best_state = copy.deepcopy(model.state_dict())
@@ -2933,11 +2940,27 @@ def fit_pytorch_mamba(
             no_improve += 1
             if no_improve >= patience:
                 print(f"Early stopping at epoch {epoch+1}")
-                break
+                stop_requested = True
         print(f"   epochs without val improvement: {no_improve}")
         # Load best
         if best_state is not None:
             model.load_state_dict(best_state)
+
+        latest_payload = {
+            'model_state': current_state,
+            'epoch': epoch + 1,
+            'history': history,
+            'best_val': best_val,
+            'no_improve': no_improve,
+            'optimizer_state': optimizer.state_dict(),
+            'scheduler_state': scheduler.state_dict(),
+        }
+        if scaler is not None:
+            latest_payload['scaler_state'] = scaler.state_dict()
+        torch.save(latest_payload, os.path.join(save_dir, latest_save_name))
+
+        if stop_requested:
+            break
 
     return model, history
 
@@ -3317,7 +3340,7 @@ def display_training_history(history=None, history_path=PYTORCH_HISTORY_PATH, ti
 
 def continue_training_pytorch(
     additional_epochs=10,
-    checkpoint_path=PYTORCH_CHECKPOINT_PATH,
+    checkpoint_path=PYTORCH_LATEST_CHECKPOINT_PATH,
     save_dir=CHECKPOINT_DIR,
     device_override=None,
     log_history=True,
@@ -3333,10 +3356,15 @@ def continue_training_pytorch(
     """
     if checkpoint_path is None:
         raise ValueError("checkpoint_path must be provided to continue training.")
-    if not os.path.exists(checkpoint_path):
-        raise FileNotFoundError(f"Checkpoint not found at {checkpoint_path}")
+    resolved_checkpoint = checkpoint_path
+    if not os.path.exists(resolved_checkpoint):
+        if checkpoint_path == PYTORCH_LATEST_CHECKPOINT_PATH and os.path.exists(PYTORCH_CHECKPOINT_PATH):
+            print(f"Latest checkpoint not found at {checkpoint_path}; falling back to best checkpoint {PYTORCH_CHECKPOINT_PATH}.")
+            resolved_checkpoint = PYTORCH_CHECKPOINT_PATH
+        else:
+            raise FileNotFoundError(f"Checkpoint not found at {checkpoint_path}")
 
-    checkpoint_cpu = torch.load(checkpoint_path, map_location='cpu')
+    checkpoint_cpu = torch.load(resolved_checkpoint, map_location='cpu')
     start_epoch = checkpoint_cpu.get('epoch', 0)
     target_epochs = start_epoch + additional_epochs
     print(f"Resuming from epoch {start_epoch}; running until epoch {target_epochs}.")
@@ -3356,7 +3384,7 @@ def continue_training_pytorch(
         class_weights_list=fit_kwargs.pop('class_weights_list', CLASS_WEIGHT_TUPLE),
         device_str=device_override,
         preview_gen=preview_gen,
-        resume_checkpoint=checkpoint_path,
+        resume_checkpoint=resolved_checkpoint,
         history_pickle_path=history_path,
         **fit_kwargs,
     )
