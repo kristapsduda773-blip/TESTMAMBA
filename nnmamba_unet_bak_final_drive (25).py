@@ -2735,6 +2735,7 @@ import copy
 
 PYTORCH_CHECKPOINT_NAME = "best_model_mamba_pytorch.pt"
 PYTORCH_HISTORY_PATH = os.path.join(CHECKPOINT_DIR, "pytorch_training_history.pkl")
+PYTORCH_CHECKPOINT_PATH = os.path.join(CHECKPOINT_DIR, PYTORCH_CHECKPOINT_NAME)
 
 def ensure_dir(path: str):
     os.makedirs(path, exist_ok=True)
@@ -3295,6 +3296,58 @@ def plot_saved_history_if_available(history_path=PYTORCH_HISTORY_PATH, title_pre
 
     history_dict = load_history_dict(history_path)
     plot_history_curves(history_dict, title_prefix=title_prefix)
+
+
+def continue_training_pytorch(
+    additional_epochs=10,
+    checkpoint_path=PYTORCH_CHECKPOINT_PATH,
+    save_dir=CHECKPOINT_DIR,
+    device_override=None,
+    log_history=True,
+    preview_gen=val_gen,
+    **fit_kwargs,
+):
+    """
+    Convenience helper for Colab/Notebook usage.
+    Loads the latest checkpoint, computes the new total epoch count, and resumes training.
+
+    Example usage inside Colab:
+        model, history = continue_training_pytorch(additional_epochs=5)
+    """
+    if checkpoint_path is None:
+        raise ValueError("checkpoint_path must be provided to continue training.")
+    if not os.path.exists(checkpoint_path):
+        raise FileNotFoundError(f"Checkpoint not found at {checkpoint_path}")
+
+    checkpoint_cpu = torch.load(checkpoint_path, map_location='cpu')
+    start_epoch = checkpoint_cpu.get('epoch', 0)
+    target_epochs = start_epoch + additional_epochs
+    print(f"Resuming from epoch {start_epoch}; running until epoch {target_epochs}.")
+
+    history_path = PYTORCH_HISTORY_PATH if log_history else None
+
+    model, history = fit_pytorch_mamba(
+        train_gen=train_gen,
+        val_gen=val_gen,
+        num_epochs=target_epochs,
+        patience=fit_kwargs.pop('patience', patience),
+        base_lr=fit_kwargs.pop('base_lr', initial_lr),
+        max_lr=fit_kwargs.pop('max_lr', max_lr),
+        step_size=fit_kwargs.pop('step_size', step_size),
+        save_dir=save_dir,
+        save_name=fit_kwargs.pop('save_name', PYTORCH_CHECKPOINT_NAME),
+        class_weights_list=fit_kwargs.pop('class_weights_list', CLASS_WEIGHT_TUPLE),
+        device_str=device_override,
+        preview_gen=preview_gen,
+        resume_checkpoint=checkpoint_path,
+        history_pickle_path=history_path,
+        **fit_kwargs,
+    )
+
+    if log_history:
+        plot_saved_history_if_available(history_path)
+
+    return model, history
 
 # for key in history.history.keys():
 #     history.history[key].extend(history_resume.history[key])
