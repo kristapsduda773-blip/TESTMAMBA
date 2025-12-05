@@ -3298,6 +3298,23 @@ def plot_saved_history_if_available(history_path=PYTORCH_HISTORY_PATH, title_pre
     plot_history_curves(history_dict, title_prefix=title_prefix)
 
 
+def display_training_history(history=None, history_path=PYTORCH_HISTORY_PATH, title_prefix="PyTorch Training"):
+    """
+    Notebook-friendly helper to visualize training curves.
+
+    Usage:
+        display_training_history()  # uses default pickle path
+        display_training_history(history_path="/content/.../history.pkl")
+        display_training_history(history=history_dict_from_memory)
+    """
+    if history is None:
+        if history_path is None:
+            raise ValueError("Provide either `history` or `history_path`.")
+        history = load_history_dict(history_path)
+
+    plot_history_curves(history, title_prefix=title_prefix)
+
+
 def continue_training_pytorch(
     additional_epochs=10,
     checkpoint_path=PYTORCH_CHECKPOINT_PATH,
