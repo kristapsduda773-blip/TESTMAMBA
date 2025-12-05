@@ -2725,11 +2725,16 @@ def build_parser():
     p.add_argument("--max-lr", dest="max_lr", type=float, default=1e-2)
     p.add_argument("--step-size", dest="step_size", type=int, default=670)
     p.add_argument("--device", type=str, default=None)
+    p.add_argument("--resume", type=str, default=None,
+                   help="Path to a PyTorch checkpoint (.pt) to resume from.")
     return p
 
 # PyTorch training loop with CLR and early stopping
 import time
 import copy
+
+PYTORCH_CHECKPOINT_NAME = "best_model_mamba_pytorch.pt"
+PYTORCH_HISTORY_PATH = os.path.join(CHECKPOINT_DIR, "pytorch_training_history.pkl")
 
 def ensure_dir(path: str):
     os.makedirs(path, exist_ok=True)
@@ -2792,10 +2797,12 @@ def fit_pytorch_mamba(
     max_lr=1e-2,
     step_size=670,
     save_dir='/content/drive/MyDrive/Unet_checkpoints',
-    save_name='best_model_mamba_pytorch.pt',
+    save_name=PYTORCH_CHECKPOINT_NAME,
     class_weights_list=CLASS_WEIGHT_TUPLE,
     device_str=None,
     preview_gen=None,
+    resume_checkpoint=None,
+    history_pickle_path=None,
 ):
     ensure_dir(save_dir)
     device = torch.device(device_str or ('cuda' if torch.cuda.is_available() else 'cpu'))
@@ -2830,8 +2837,43 @@ def fit_pytorch_mamba(
     no_improve = 0
 
     history = { 'loss': [], 'val_loss': [], 'dice': [], 'val_dice': [], 'lr': [] }
+    start_epoch = 0
+    resolved_resume = None
+    if resume_checkpoint:
+        resolved_resume = resume_checkpoint
+        if not os.path.isabs(resolved_resume):
+            resolved_resume = os.path.join(save_dir, resolved_resume)
+        if os.path.exists(resolved_resume):
+            print(f"Loading checkpoint from {resolved_resume}")
+            checkpoint = torch.load(resolved_resume, map_location=device)
+            model.load_state_dict(checkpoint['model_state'])
+            best_state = copy.deepcopy(model.state_dict())
+            start_epoch = checkpoint.get('epoch', 0)
+            history = checkpoint.get('history', history)
+            best_val = checkpoint.get('best_val', best_val)
+            no_improve = checkpoint.get('no_improve', 0)
 
-    for epoch in range(num_epochs):
+            opt_state = checkpoint.get('optimizer_state')
+            if opt_state is not None:
+                optimizer.load_state_dict(opt_state)
+
+            sched_state = checkpoint.get('scheduler_state')
+            if sched_state is not None:
+                scheduler.load_state_dict(sched_state)
+
+            scaler_state = checkpoint.get('scaler_state')
+            if scaler is not None and scaler_state is not None:
+                scaler.load_state_dict(scaler_state)
+
+            print(f"Resumed training at epoch {start_epoch}.")
+        else:
+            print(f"Resume checkpoint {resolved_resume} not found; starting from scratch.")
+
+    if start_epoch >= num_epochs:
+        print(f"Start epoch {start_epoch} >= requested total {num_epochs}; skipping training.")
+        return model, history
+
+    for epoch in range(start_epoch, num_epochs):
         train_loss, train_dice = train_epoch(
             model,
             train_loader,
@@ -2852,6 +2894,12 @@ def fit_pytorch_mamba(
         history['dice'].append(train_dice)
         history['val_dice'].append(val_dice)
         history['lr'].append(current_lr)
+        if history_pickle_path:
+            try:
+                with open(history_pickle_path, 'wb') as f:
+                    pickle.dump(history, f)
+            except OSError as exc:
+                print(f"Failed to write history to {history_pickle_path}: {exc}")
 
         print(f"Epoch {epoch+1}/{num_epochs}  loss={train_loss:.4f}  val_loss={val_loss:.4f}  dice={train_dice:.4f}  val_dice={val_dice:.4f}  lr={current_lr:.6f}")
         if preview_batch is not None:
@@ -2867,7 +2915,18 @@ def fit_pytorch_mamba(
         if val_loss < best_val:
             best_val = val_loss
             best_state = copy.deepcopy(model.state_dict())
-            torch.save({ 'model_state': best_state, 'epoch': epoch+1, 'history': history }, os.path.join(save_dir, save_name))
+            checkpoint_payload = {
+                'model_state': best_state,
+                'epoch': epoch + 1,
+                'history': history,
+                'best_val': best_val,
+                'no_improve': 0,
+                'optimizer_state': optimizer.state_dict(),
+                'scheduler_state': scheduler.state_dict(),
+            }
+            if scaler is not None:
+                checkpoint_payload['scaler_state'] = scaler.state_dict()
+            torch.save(checkpoint_payload, os.path.join(save_dir, save_name))
             no_improve = 0
         else:
             no_improve += 1
@@ -3046,41 +3105,39 @@ def show_mid_slice_preview(
     if was_training:
         model.train()
 
-train_loader, val_loader = build_dataloaders(train_gen, val_gen, num_workers=0)
-batch = next(iter(train_loader))
-print(batch[0].shape)
+def main():
+    args, _ = parser.parse_known_args()
 
-# def main():
-#     args, _ = parser.parse_known_args()
+    if args.mode == "smoke":
+        run_smoke_test(device_str=args.device)
+        return
 
-#     if args.mode == "smoke":
-#         run_smoke_test(device_str=args.device)
-#         return
+    model, history = fit_pytorch_mamba(
+        train_gen=train_gen,
+        val_gen=val_gen,
+        num_epochs=args.epochs,
+        patience=args.patience,
+        base_lr=args.base_lr,
+        max_lr=args.max_lr,
+        step_size=args.step_size,
+        save_dir=CHECKPOINT_DIR,
+        class_weights_list=CLASS_WEIGHT_TUPLE,
+        device_str=args.device,
+        preview_gen=val_gen,
+        resume_checkpoint=args.resume,
+        history_pickle_path=PYTORCH_HISTORY_PATH,
+    )
 
-#     model, history = fit_pytorch_mamba(
-#         train_gen=train_gen,
-#         val_gen=val_gen,
-#         num_epochs=args.epochs,
-#         patience=args.patience,
-#         base_lr=args.base_lr,
-#         max_lr=args.max_lr,
-#         step_size=args.step_size,
-#         save_dir=CHECKPOINT_DIR,
-#         class_weights_list=CLASS_WEIGHT_TUPLE,
-#         device_str=args.device,
-#         preview_gen=val_gen,
-#     )
-
-#     val_history = history.get('val_loss', [])
-#     best_val = min(val_history) if val_history else None
-#     if best_val is not None:
-#         print(f"Training complete. Best validation loss: {best_val:.4f}")
-#     else:
-#         print("Training complete.")
+    val_history = history.get('val_loss', [])
+    best_val = min(val_history) if val_history else None
+    if best_val is not None:
+        print(f"Training complete. Best validation loss: {best_val:.4f}")
+    else:
+        print("Training complete.")
 
 
-# if __name__ == "__main__":
-#     main()
+if __name__ == "__main__":
+    main()
 
 """## turpini trenēt"""
 
@@ -3136,44 +3193,108 @@ print(batch[0].shape)
 
 """kkas"""
 
-# Extract metrics from the saved history dictionary
-loss = saved_history['loss']
-val_loss = saved_history['val_loss']
-dice_metric = saved_history['dice_metric']
-val_dice_metric = saved_history['val_dice_metric']
-lr = saved_history['lr']  # Ensure 'lr' is saved in your history callback
+def _history_series(history_dict, *possible_keys):
+    for key in possible_keys:
+        values = history_dict.get(key)
+        if values is not None:
+            return values
+    return None
 
-# Determine the number of epochs
-epochs = range(1, len(loss) + 1)
 
-# Create a figure with three subplots: Loss, Dice Metric, and Learning Rate
-fig, axes = plt.subplots(3, 1, figsize=(12, 18))
+def load_history_dict(source):
+    """
+    Accept either a dict that already contains history arrays or a path to a
+    pickle/torch checkpoint file and return the parsed history dictionary.
+    """
+    if isinstance(source, dict):
+        return source
 
-# Plot Loss values
-axes[0].plot(epochs, loss, label='Training Loss', color='blue')
-axes[0].plot(epochs, val_loss, label='Validation Loss', color='red')
-axes[0].set_title('Loss per Epoch')
-axes[0].set_xlabel('Epoch')
-axes[0].set_ylabel('Loss')
-axes[0].legend()
+    if not os.path.exists(source):
+        raise FileNotFoundError(f"History source {source} does not exist.")
 
-# Plot Dice Metric values
-axes[1].plot(epochs, dice_metric, label='Training Dice Metric', color='blue')
-axes[1].plot(epochs, val_dice_metric, label='Validation Dice Metric', color='red')
-axes[1].set_title('Dice Metric per Epoch')
-axes[1].set_xlabel('Epoch')
-axes[1].set_ylabel('Dice Metric')
-axes[1].legend()
+    if source.endswith(".pt"):
+        checkpoint = torch.load(source, map_location='cpu')
+        history = checkpoint.get('history')
+        if history is None:
+            raise KeyError(f"No 'history' key inside checkpoint {source}.")
+        return history
 
-# Plot Learning Rate
-axes[2].plot(epochs, lr, label='Learning Rate', color='green')
-axes[2].set_title('Learning Rate per Epoch')
-axes[2].set_xlabel('Epoch')
-axes[2].set_ylabel('Learning Rate')
-axes[2].legend()
+    with open(source, 'rb') as f:
+        return pickle.load(f)
 
-plt.tight_layout()
-plt.show()
+
+def plot_history_curves(history_dict, title_prefix="Training"):
+    """
+    Plot loss, dice and learning-rate curves from a history dictionary.
+    Works for both TensorFlow (dice_metric) and PyTorch (dice) key names.
+    """
+    if not history_dict:
+        print("History dictionary is empty; nothing to plot.")
+        return
+
+    loss_values = _history_series(history_dict, 'loss')
+    val_loss_values = _history_series(history_dict, 'val_loss')
+    dice_values = _history_series(history_dict, 'dice', 'dice_metric')
+    val_dice_values = _history_series(history_dict, 'val_dice', 'val_dice_metric')
+    lr_values = history_dict.get('lr')
+
+    required = {
+        'loss': loss_values,
+        'val_loss': val_loss_values,
+        'dice': dice_values,
+        'val_dice': val_dice_values,
+    }
+    missing = [name for name, series in required.items() if series is None]
+    if missing:
+        raise KeyError(f"Missing history entries for: {', '.join(missing)}")
+
+    epochs = range(1, len(loss_values) + 1)
+    fig, axes = plt.subplots(3, 1, figsize=(12, 18))
+
+    axes[0].plot(epochs, loss_values, label='Training Loss', color='blue')
+    axes[0].plot(epochs, val_loss_values, label='Validation Loss', color='red')
+    axes[0].set_title(f'{title_prefix} Loss per Epoch')
+    axes[0].set_xlabel('Epoch')
+    axes[0].set_ylabel('Loss')
+    axes[0].legend()
+
+    axes[1].plot(epochs, dice_values, label='Training Dice', color='blue')
+    axes[1].plot(epochs, val_dice_values, label='Validation Dice', color='red')
+    axes[1].set_title(f'{title_prefix} Dice per Epoch')
+    axes[1].set_xlabel('Epoch')
+    axes[1].set_ylabel('Dice')
+    axes[1].legend()
+
+    if lr_values:
+        lr_epochs = range(1, len(lr_values) + 1)
+        axes[2].plot(lr_epochs, lr_values, label='Learning Rate', color='green')
+        axes[2].set_title('Learning Rate per Epoch')
+        axes[2].set_xlabel('Epoch')
+        axes[2].set_ylabel('Learning Rate')
+        axes[2].legend()
+    else:
+        axes[2].text(0.5, 0.5, "No learning-rate history found",
+                     ha='center', va='center', transform=axes[2].transAxes)
+        axes[2].axis('off')
+
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_saved_history_if_available(history_path=PYTORCH_HISTORY_PATH, title_prefix="PyTorch Training"):
+    """
+    Convenience helper to plot history if the pickle/checkpoint file exists.
+    """
+    if history_path is None:
+        print("No history path specified; skipping plot.")
+        return
+
+    if not os.path.exists(history_path):
+        print(f"History file not found at {history_path}; skipping plot.")
+        return
+
+    history_dict = load_history_dict(history_path)
+    plot_history_curves(history_dict, title_prefix=title_prefix)
 
 # for key in history.history.keys():
 #     history.history[key].extend(history_resume.history[key])
