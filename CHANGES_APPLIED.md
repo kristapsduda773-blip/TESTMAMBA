@@ -1,12 +1,12 @@
 # Changes Applied to nnmamba_unet_bak_final_drive.py
 
-## ✅ Update Complete
+## Update Complete
 
 Your Python file has been successfully updated with all the fixes for training mode selection and checkpoint resume functionality.
 
 ---
 
-## 📝 Changes Made
+## Changes Made
 
 ### 1. **Added Training Configuration Section** (Lines 435-449)
 
@@ -112,7 +112,7 @@ check_training_status("/path/to/checkpoint.pt")
 
 ---
 
-## 🎯 How to Use the Updated Code
+## How to Use the Updated Code
 
 ### Option 1: Start New Training
 ```python
@@ -148,7 +148,7 @@ check_training_status()
 
 ---
 
-## 📊 File Statistics
+## File Statistics
 
 | Metric | Before | After | Change |
 |--------|--------|-------|--------|
@@ -160,7 +160,7 @@ check_training_status()
 
 ---
 
-## ✅ Validation Checklist
+## Validation Checklist
 
 All issues from the validation report have been fixed:
 
@@ -174,7 +174,7 @@ All issues from the validation report have been fixed:
 
 ---
 
-## 🧪 Testing Your Updated Code
+## Testing Your Updated Code
 
 ### Test 1: Verify Configuration
 ```python
@@ -226,7 +226,7 @@ TRAINING_MODE = "continue"
 
 ---
 
-## 🔧 Configuration Variables Reference
+## Configuration Variables Reference
 
 ### User-Editable (Line 440)
 ```python
@@ -247,7 +247,7 @@ CHECKPOINT_PATH = os.path.join(CHECKPOINT_DIR, PYTORCH_CHECKPOINT_NAME)
 
 ---
 
-## 📍 Key Line Numbers
+## Key Line Numbers
 
 | Feature | Line Number |
 |---------|-------------|
@@ -261,7 +261,7 @@ CHECKPOINT_PATH = os.path.join(CHECKPOINT_DIR, PYTORCH_CHECKPOINT_NAME)
 
 ---
 
-## 🚀 Quick Start Guide
+## Quick Start Guide
 
 ### For First-Time Training:
 1. Open `nnmamba_unet_bak_final_drive.py`
@@ -284,7 +284,7 @@ CHECKPOINT_PATH = os.path.join(CHECKPOINT_DIR, PYTORCH_CHECKPOINT_NAME)
 
 ---
 
-## 💡 Tips
+## Tips
 
 1. **Always test with small epoch counts first** (e.g., 5 epochs) before running full training
 2. **Check GPU availability** before starting long training runs
@@ -294,7 +294,7 @@ CHECKPOINT_PATH = os.path.join(CHECKPOINT_DIR, PYTORCH_CHECKPOINT_NAME)
 
 ---
 
-## 🆘 Troubleshooting
+## Troubleshooting
 
 ### "NameError: name 'TRAINING_MODE' is not defined"
 **Cause:** The configuration section wasn't added correctly  
@@ -314,7 +314,7 @@ CHECKPOINT_PATH = os.path.join(CHECKPOINT_DIR, PYTORCH_CHECKPOINT_NAME)
 
 ---
 
-## 📚 Additional Resources
+## Additional Resources
 
 All the detailed documentation files are still available:
 
@@ -327,21 +327,21 @@ All the detailed documentation files are still available:
 
 ---
 
-## ✨ Summary
+## Summary
 
 Your `nnmamba_unet_bak_final_drive.py` file now has:
 
-✅ **User-selectable training mode** (new vs. continue)  
-✅ **Robust error handling** (no crashes on missing checkpoints)  
-✅ **Clear console output** (know exactly what's happening)  
-✅ **Helper functions** (check checkpoint status anytime)  
-✅ **Production-ready** (tested logic, comprehensive validation)  
+- User-selectable training mode (new vs. continue)
+- Robust error handling (no crashes on missing checkpoints)
+- Clear console output (know exactly what's happening)
+- Helper functions (check checkpoint status anytime)
+- Production-ready (tested logic, comprehensive validation)
 
-**You're ready to train your ICH segmentation model! 🧠🔬**
+You're ready to train your ICH segmentation model.
 
 ---
 
 **File Updated:** `nnmamba_unet_bak_final_drive.py`  
 **Total Changes:** 245 lines added/modified  
-**Status:** ✅ Ready for use  
+**Status:** Ready for use  
 **Next Step:** Run your training with `TRAINING_MODE = "new"` or `"continue"`

@@ -1,12 +1,12 @@
-# 🚀 Quick Reference Card
+# Quick Reference Card
 
-## Your File Has Been Updated! ✅
+## Your File Has Been Updated
 
 `nnmamba_unet_bak_final_drive.py` now has user-selectable training modes.
 
 ---
 
-## 🎯 How to Control Training Mode
+## How to Control Training Mode
 
 ### Edit Line 440 in the .py file:
 
@@ -20,17 +20,17 @@ TRAINING_MODE = "continue"  # Resume from last checkpoint
 
 ---
 
-## 📋 Quick Actions
+## Quick Actions
 
 ### Start New Training
 1. Line 440: `TRAINING_MODE = "new"`
 2. Run script
-3. ✅ Trains from epoch 0
+3. Trains from epoch 0
 
 ### Continue Training (After Colab Timeout)
 1. Line 440: `TRAINING_MODE = "continue"`
 2. Run script  
-3. ✅ Resumes from last epoch
+3. Resumes from last epoch
 
 ### Change Number of Epochs
 - **New training:** Line 3171: `NUM_EPOCHS = 10000`
@@ -45,7 +45,7 @@ Shows epoch, loss, and all saved states.
 
 ---
 
-## 🔢 Key Line Numbers
+## Key Line Numbers
 
 | What | Line |
 |------|------|
@@ -55,7 +55,7 @@ Shows epoch, loss, and all saved states.
 
 ---
 
-## ⚡ Common Scenarios
+## Common Scenarios
 
 ### Scenario 1: First Time Training
 ```python
@@ -86,16 +86,16 @@ TRAINING_MODE = "new"
 
 ---
 
-## 🛡️ Safety Features
+## Safety Features
 
-✅ **Checkpoint missing?** → Automatically falls back to new training (no crash)  
-✅ **Existing checkpoint?** → Shows warning before overwriting  
-✅ **Invalid mode?** → Clear error message with instructions  
-✅ **Detailed logging** → Know exactly what's happening  
+- **Checkpoint missing:** Automatically falls back to new training (no crash)
+- **Existing checkpoint:** Shows warning before overwriting
+- **Invalid mode:** Clear error message with instructions
+- **Detailed logging:** Know exactly what's happening  
 
 ---
 
-## 🧪 Test Before Full Training
+## Test Before Full Training
 
 Always test with small epochs first:
 
@@ -108,7 +108,7 @@ Run script, verify it works, then change to full epochs.
 
 ---
 
-## 📊 Console Output Examples
+## Console Output Examples
 
 ### New Training Mode:
 ```
@@ -116,7 +116,7 @@ Run script, verify it works, then change to full epochs.
 NEURAL NETWORK TRAINING - ICH SEGMENTATION
 ======================================================================
 
-🔵 MODE: NEW TRAINING
+MODE: NEW TRAINING
 ----------------------------------------------------------------------
 • Starting from epoch 0 with fresh model weights
 • Optimizer and scheduler initialized to default states
@@ -131,7 +131,7 @@ NEURAL NETWORK TRAINING - ICH SEGMENTATION
 NEURAL NETWORK TRAINING - ICH SEGMENTATION
 ======================================================================
 
-🟢 MODE: CONTINUE TRAINING
+MODE: CONTINUE TRAINING
 ----------------------------------------------------------------------
 📂 Loading checkpoint from: /content/drive/.../checkpoint.pt
 ✅ Checkpoint loaded successfully!
@@ -155,7 +155,7 @@ NEURAL NETWORK TRAINING - ICH SEGMENTATION
 
 ---
 
-## 🆘 Emergency Fixes
+## Emergency Fixes
 
 ### Problem: Code crashes immediately
 **Fix:** Check line 440 - should be `TRAINING_MODE = "new"` or `"continue"` (lowercase)
@@ -168,7 +168,7 @@ NEURAL NETWORK TRAINING - ICH SEGMENTATION
 
 ---
 
-## 📱 Contact Points
+## Documentation Reference
 
 | Issue | Check File |
 |-------|------------|
@@ -179,7 +179,7 @@ NEURAL NETWORK TRAINING - ICH SEGMENTATION
 
 ---
 
-## ✨ What Changed in Your File
+## What Changed in Your File
 
 **Added (line 440):**
 ```python
@@ -197,7 +197,7 @@ check_training_status()  # New helper function
 
 ---
 
-## 🎓 Pro Tips
+## Pro Tips
 
 1. **Test First:** Always run 5 epochs test before full training
 2. **Check Status:** Use `check_training_status()` to verify checkpoint
@@ -207,7 +207,7 @@ check_training_status()  # New helper function
 
 ---
 
-## ✅ Ready to Train!
+## Ready to Train
 
 Your code is now production-ready with proper checkpoint management.
 
@@ -215,7 +215,7 @@ Your code is now production-ready with proper checkpoint management.
 1. Open `nnmamba_unet_bak_final_drive.py`
 2. Set line 440: `TRAINING_MODE = "new"` or `"continue"`
 3. Run in Google Colab
-4. Watch your model train! 🧠🔬
+4. Watch your model train
 
 ---
 

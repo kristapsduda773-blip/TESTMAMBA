@@ -3195,18 +3195,18 @@ if TRAINING_MODE == "new":
     # START NEW TRAINING FROM EPOCH 0
     # ============================================================
     
-    print("\n🔵 MODE: NEW TRAINING")
+    print("\nMODE: NEW TRAINING")
     print("-" * 70)
-    print("• Starting from epoch 0 with fresh model weights")
-    print("• Optimizer and scheduler initialized to default states")
-    print("• Any existing checkpoints will be OVERWRITTEN")
-    print(f"• Training will run for {NUM_EPOCHS} epochs (or until early stopping)")
-    print(f"• Checkpoints will be saved to: {CHECKPOINT_DIR}")
+    print("- Starting from epoch 0 with fresh model weights")
+    print("- Optimizer and scheduler initialized to default states")
+    print("- Any existing checkpoints will be OVERWRITTEN")
+    print(f"- Training will run for {NUM_EPOCHS} epochs (or until early stopping)")
+    print(f"- Checkpoints will be saved to: {CHECKPOINT_DIR}")
     print("-" * 70 + "\n")
     
     # Check if checkpoint already exists and warn user
     if os.path.exists(CHECKPOINT_PATH):
-        print("⚠️  WARNING: Existing checkpoint found!")
+        print("WARNING: Existing checkpoint found!")
         print(f"   Location: {CHECKPOINT_PATH}")
         print("   This checkpoint will be OVERWRITTEN during training.")
         print("   (Continuing execution in 3 seconds...)")
@@ -3233,7 +3233,7 @@ if TRAINING_MODE == "new":
     )
     
     print("\n" + "=" * 70)
-    print("✅ NEW TRAINING COMPLETED")
+    print("NEW TRAINING COMPLETED")
     print(f"   Total epochs trained: {len(history['loss'])}")
     print(f"   Final training loss: {history['loss'][-1]:.4f}")
     print(f"   Final validation loss: {history['val_loss'][-1]:.4f}")
@@ -3246,15 +3246,15 @@ elif TRAINING_MODE == "continue":
     # CONTINUE TRAINING FROM CHECKPOINT
     # ============================================================
     
-    print("\n🟢 MODE: CONTINUE TRAINING")
+    print("\nMODE: CONTINUE TRAINING")
     print("-" * 70)
     
     # Check if checkpoint exists
     if not os.path.exists(CHECKPOINT_PATH):
-        print("⚠️  CHECKPOINT NOT FOUND!")
+        print("CHECKPOINT NOT FOUND!")
         print(f"   Expected location: {CHECKPOINT_PATH}")
         print()
-        print("📌 FALLBACK: Starting NEW TRAINING from epoch 0")
+        print("FALLBACK: Starting NEW TRAINING from epoch 0")
         print(f"   Training will run for {NUM_EPOCHS} epochs")
         print("-" * 70 + "\n")
         
@@ -3266,7 +3266,7 @@ elif TRAINING_MODE == "continue":
     else:
         # Load checkpoint to inspect saved state
         try:
-            print(f"📂 Loading checkpoint from: {CHECKPOINT_PATH}")
+            print(f"Loading checkpoint from: {CHECKPOINT_PATH}")
             ckpt = torch.load(CHECKPOINT_PATH, map_location="cpu")
             
             # Extract checkpoint information
@@ -3277,38 +3277,38 @@ elif TRAINING_MODE == "continue":
             # Calculate target epochs
             total_epochs = start_epoch + ADDITIONAL_EPOCHS
             
-            print(f"✅ Checkpoint loaded successfully!")
+            print(f"Checkpoint loaded successfully!")
             print()
-            print("📊 CHECKPOINT INFORMATION:")
-            print(f"   • Last completed epoch: {start_epoch}")
-            print(f"   • Training will resume from: epoch {start_epoch + 1}")
-            print(f"   • Target epoch: {total_epochs}")
-            print(f"   • Additional epochs to train: {ADDITIONAL_EPOCHS}")
+            print("CHECKPOINT INFORMATION:")
+            print(f"   - Last completed epoch: {start_epoch}")
+            print(f"   - Training will resume from: epoch {start_epoch + 1}")
+            print(f"   - Target epoch: {total_epochs}")
+            print(f"   - Additional epochs to train: {ADDITIONAL_EPOCHS}")
             
             if best_val is not None:
-                print(f"   • Best validation loss so far: {best_val:.4f}")
+                print(f"   - Best validation loss so far: {best_val:.4f}")
             
             if 'loss' in saved_history and len(saved_history['loss']) > 0:
-                print(f"   • Last training loss: {saved_history['loss'][-1]:.4f}")
-                print(f"   • Last validation loss: {saved_history['val_loss'][-1]:.4f}")
+                print(f"   - Last training loss: {saved_history['loss'][-1]:.4f}")
+                print(f"   - Last validation loss: {saved_history['val_loss'][-1]:.4f}")
             
             print()
-            print("🔄 RESTORING MODEL STATE:")
-            print("   ✓ Model weights")
-            print("   ✓ Optimizer state (SGD with momentum)")
-            print("   ✓ Learning rate scheduler (Cyclic LR)")
-            print("   ✓ Training history")
-            print("   ✓ Early stopping counter")
+            print("RESTORING MODEL STATE:")
+            print("   - Model weights")
+            print("   - Optimizer state (SGD with momentum)")
+            print("   - Learning rate scheduler (Cyclic LR)")
+            print("   - Training history")
+            print("   - Early stopping counter")
             if 'scaler_state' in ckpt:
-                print("   ✓ AMP scaler state")
+                print("   - AMP scaler state")
             print("-" * 70 + "\n")
             
             resume_path = CHECKPOINT_PATH
             
         except Exception as e:
-            print(f"❌ ERROR loading checkpoint: {e}")
+            print(f"ERROR loading checkpoint: {e}")
             print()
-            print("📌 FALLBACK: Starting NEW TRAINING from epoch 0")
+            print("FALLBACK: Starting NEW TRAINING from epoch 0")
             print(f"   Training will run for {NUM_EPOCHS} epochs")
             print("-" * 70 + "\n")
             
@@ -3336,9 +3336,9 @@ elif TRAINING_MODE == "continue":
     
     print("\n" + "=" * 70)
     if resume_path is None:
-        print("✅ NEW TRAINING COMPLETED (fallback mode)")
+        print("NEW TRAINING COMPLETED (fallback mode)")
     else:
-        print("✅ CONTINUED TRAINING COMPLETED")
+        print("CONTINUED TRAINING COMPLETED")
         print(f"   Resumed from epoch: {start_epoch}")
     
     print(f"   Total epochs in history: {len(history['loss'])}")
@@ -3352,7 +3352,7 @@ elif TRAINING_MODE == "continue":
 # TRAINING COMPLETE
 # ================================
 
-print("🎉 Training session finished!")
+print("Training session finished!")
 print(f"   Mode: {TRAINING_MODE.upper()}")
 print(f"   Device: {torch.device('cuda' if torch.cuda.is_available() else 'cpu')}")
 print(f"   Model saved: {os.path.exists(CHECKPOINT_PATH)}")
@@ -3377,7 +3377,7 @@ def check_training_status(checkpoint_path=None):
         checkpoint_path = CHECKPOINT_PATH
     
     if not os.path.exists(checkpoint_path):
-        print(f"❌ Checkpoint not found: {checkpoint_path}")
+        print(f"Checkpoint not found: {checkpoint_path}")
         return None
     
     try:
@@ -3409,28 +3409,28 @@ def check_training_status(checkpoint_path=None):
         print(f"Epochs without improvement: {info['no_improve']}")
         print()
         print("Saved states:")
-        print(f"  • Optimizer: {'✓' if info['has_optimizer'] else '✗'}")
-        print(f"  • LR Scheduler: {'✓' if info['has_scheduler'] else '✗'}")
-        print(f"  • AMP Scaler: {'✓' if info['has_scaler'] else '✗'}")
-        print(f"  • History: {'✓' if info['has_history'] else '✗'}")
+        print(f"  - Optimizer: {'Yes' if info['has_optimizer'] else 'No'}")
+        print(f"  - LR Scheduler: {'Yes' if info['has_scheduler'] else 'No'}")
+        print(f"  - AMP Scaler: {'Yes' if info['has_scaler'] else 'No'}")
+        print(f"  - History: {'Yes' if info['has_history'] else 'No'}")
         
         if info['has_history']:
             print()
             print("Training history:")
-            print(f"  • Total epochs: {info['total_epochs_trained']}")
+            print(f"  - Total epochs: {info['total_epochs_trained']}")
             if info['final_train_loss']:
-                print(f"  • Final train loss: {info['final_train_loss']:.4f}")
+                print(f"  - Final train loss: {info['final_train_loss']:.4f}")
             if info['final_val_loss']:
-                print(f"  • Final val loss: {info['final_val_loss']:.4f}")
+                print(f"  - Final val loss: {info['final_val_loss']:.4f}")
             if info['best_val_loss_achieved']:
-                print(f"  • Best val loss ever: {info['best_val_loss_achieved']:.4f}")
+                print(f"  - Best val loss ever: {info['best_val_loss_achieved']:.4f}")
         
         print("=" * 70)
         
         return info
         
     except Exception as e:
-        print(f"❌ Error reading checkpoint: {e}")
+        print(f"Error reading checkpoint: {e}")
         return None
 
 # Example usage:
