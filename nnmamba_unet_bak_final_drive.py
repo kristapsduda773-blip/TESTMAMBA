@@ -2759,7 +2759,8 @@ def build_parser():
 import time
 import copy
 
-PYTORCH_CHECKPOINT_NAME = "best_model_mamba_pytorch.pt"
+PYTORCH_CHECKPOINT_LATEST = "checkpoint_latest.pt"  # For resuming training
+PYTORCH_CHECKPOINT_BEST = "checkpoint_best.pt"      # For inference/evaluation
 PYTORCH_HISTORY_PATH = os.path.join(CHECKPOINT_DIR, "pytorch_training_history.pkl")
 
 def ensure_dir(path: str):
@@ -2823,7 +2824,8 @@ def fit_pytorch_mamba(
     max_lr=1e-2,
     step_size=670,
     save_dir='/content/drive/MyDrive/Unet_checkpoints',
-    save_name=PYTORCH_CHECKPOINT_NAME,
+    save_name_latest=PYTORCH_CHECKPOINT_LATEST,
+    save_name_best=PYTORCH_CHECKPOINT_BEST,
     class_weights_list=CLASS_WEIGHT_TUPLE,
     device_str=None,
     preview_gen=None,
@@ -2873,20 +2875,22 @@ def fit_pytorch_mamba(
             print(f"Loading checkpoint from {resolved_resume}")
             checkpoint = torch.load(resolved_resume, map_location=device)
             
-            # Load the LAST trained model (not best)
+            # Load the checkpoint (should be latest, not best)
             model.load_state_dict(checkpoint['model_state'])
-            
-            # Load the best model separately (for tracking)
-            if 'best_model_state' in checkpoint:
-                best_state = checkpoint['best_model_state']
-            else:
-                # Old checkpoint format - model_state was the best
-                best_state = copy.deepcopy(checkpoint['model_state'])
             
             start_epoch = checkpoint.get('epoch', 0)
             history = checkpoint.get('history', history)
             best_val = checkpoint.get('best_val', best_val)
             no_improve = checkpoint.get('no_improve', 0)
+            
+            # Load best model separately if it exists
+            best_checkpoint_path = os.path.join(save_dir, save_name_best)
+            if os.path.exists(best_checkpoint_path):
+                best_ckpt = torch.load(best_checkpoint_path, map_location=device)
+                best_state = best_ckpt['model_state']
+                print(f"Also loaded best model checkpoint (val_loss={best_val:.4f})")
+            else:
+                best_state = copy.deepcopy(model.state_dict())
 
             opt_state = checkpoint.get('optimizer_state')
             if opt_state is not None:
@@ -2902,7 +2906,8 @@ def fit_pytorch_mamba(
 
 
             print(f"Loaded checkpoint: {start_epoch} epochs completed. Will resume from epoch {start_epoch + 1}.")
-            print(f"Current model is from epoch {start_epoch}, best model had val_loss={best_val:.4f}")
+            print(f"Resuming from LATEST checkpoint (epoch {start_epoch})")
+            print(f"Best model saved separately with val_loss={best_val:.4f}")
         else:
             print(f"Resume checkpoint {resolved_resume} not found; starting from scratch.")
 
@@ -2953,19 +2958,28 @@ def fit_pytorch_mamba(
                 preview_dir=preview_output_dir,
             )
 
-        # Track best model
+        # Track best model and save separately
         if val_loss < best_val:
             best_val = val_loss
             best_state = copy.deepcopy(model.state_dict())
             no_improve = 0
-            print(f"  New best model (val_loss improved to {best_val:.4f})")
+            
+            # Save BEST checkpoint
+            best_checkpoint = {
+                'model_state': best_state,
+                'epoch': epoch + 1,
+                'history': history,
+                'best_val': best_val,
+            }
+            torch.save(best_checkpoint, os.path.join(save_dir, save_name_best))
+            print(f"  NEW BEST MODEL - val_loss improved to {best_val:.4f}")
+            print(f"  Saved to: {save_name_best}")
         else:
             no_improve += 1
         
-        # Save checkpoint EVERY epoch (not just best)
-        checkpoint_payload = {
-            'model_state': model.state_dict(),  # Current model, not best
-            'best_model_state': best_state,      # Also save best model
+        # Save LATEST checkpoint EVERY epoch (for resuming)
+        latest_checkpoint = {
+            'model_state': model.state_dict(),
             'epoch': epoch + 1,
             'history': history,
             'best_val': best_val,
@@ -2974,9 +2988,9 @@ def fit_pytorch_mamba(
             'scheduler_state': scheduler.state_dict(),
         }
         if scaler is not None:
-            checkpoint_payload['scaler_state'] = scaler.state_dict()
-        torch.save(checkpoint_payload, os.path.join(save_dir, save_name))
-        print(f"  Checkpoint saved (epoch {epoch+1})")
+            latest_checkpoint['scaler_state'] = scaler.state_dict()
+        torch.save(latest_checkpoint, os.path.join(save_dir, save_name_latest))
+        print(f"  Latest checkpoint saved (epoch {epoch+1}) -> {save_name_latest}")
         
         # Early stopping check
         if no_improve >= patience:
@@ -3206,7 +3220,8 @@ import torch
 # ================================
 NUM_EPOCHS = 10000           # Total epochs for new training
 ADDITIONAL_EPOCHS = 1000     # Additional epochs when continuing (added to saved epoch)
-CHECKPOINT_PATH = os.path.join(CHECKPOINT_DIR, PYTORCH_CHECKPOINT_NAME)
+CHECKPOINT_PATH_LATEST = os.path.join(CHECKPOINT_DIR, PYTORCH_CHECKPOINT_LATEST)
+CHECKPOINT_PATH_BEST = os.path.join(CHECKPOINT_DIR, PYTORCH_CHECKPOINT_BEST)
 
 # ================================
 # TRAINING MODE VALIDATION
@@ -3241,10 +3256,13 @@ if TRAINING_MODE == "new":
     print("-" * 70 + "\n")
     
     # Check if checkpoint already exists and warn user
-    if os.path.exists(CHECKPOINT_PATH):
-        print("WARNING: Existing checkpoint found!")
-        print(f"   Location: {CHECKPOINT_PATH}")
-        print("   This checkpoint will be OVERWRITTEN during training.")
+    if os.path.exists(CHECKPOINT_PATH_LATEST) or os.path.exists(CHECKPOINT_PATH_BEST):
+        print("WARNING: Existing checkpoints found!")
+        if os.path.exists(CHECKPOINT_PATH_LATEST):
+            print(f"   Latest: {CHECKPOINT_PATH_LATEST}")
+        if os.path.exists(CHECKPOINT_PATH_BEST):
+            print(f"   Best: {CHECKPOINT_PATH_BEST}")
+        print("   These checkpoints will be OVERWRITTEN during training.")
         print("   (Continuing execution in 3 seconds...)")
         import time
         time.sleep(3)
@@ -3274,7 +3292,8 @@ if TRAINING_MODE == "new":
     print(f"   Final training loss: {history['loss'][-1]:.4f}")
     print(f"   Final validation loss: {history['val_loss'][-1]:.4f}")
     print(f"   Best validation loss: {min(history['val_loss']):.4f}")
-    print(f"   Model saved to: {CHECKPOINT_PATH}")
+    print(f"   Latest checkpoint: {CHECKPOINT_PATH_LATEST}")
+    print(f"   Best checkpoint: {CHECKPOINT_PATH_BEST}")
     print("=" * 70 + "\n")
 
 elif TRAINING_MODE == "continue":
@@ -3285,10 +3304,10 @@ elif TRAINING_MODE == "continue":
     print("\nMODE: CONTINUE TRAINING")
     print("-" * 70)
     
-    # Check if checkpoint exists
-    if not os.path.exists(CHECKPOINT_PATH):
+    # Check if checkpoint exists (look for latest first)
+    if not os.path.exists(CHECKPOINT_PATH_LATEST):
         print("CHECKPOINT NOT FOUND!")
-        print(f"   Expected location: {CHECKPOINT_PATH}")
+        print(f"   Expected location: {CHECKPOINT_PATH_LATEST}")
         print()
         print("FALLBACK: Starting NEW TRAINING from epoch 0")
         print(f"   Training will run for {NUM_EPOCHS} epochs")
@@ -3302,8 +3321,8 @@ elif TRAINING_MODE == "continue":
     else:
         # Load checkpoint to inspect saved state
         try:
-            print(f"Loading checkpoint from: {CHECKPOINT_PATH}")
-            ckpt = torch.load(CHECKPOINT_PATH, map_location="cpu")
+            print(f"Loading LATEST checkpoint from: {CHECKPOINT_PATH_LATEST}")
+            ckpt = torch.load(CHECKPOINT_PATH_LATEST, map_location="cpu")
             
             # Extract checkpoint information
             start_epoch = ckpt.get("epoch", 0)
@@ -3340,7 +3359,7 @@ elif TRAINING_MODE == "continue":
                 print("   - AMP scaler state")
             print("-" * 70 + "\n")
             
-            resume_path = CHECKPOINT_PATH
+            resume_path = CHECKPOINT_PATH_LATEST
             
         except Exception as e:
             print(f"ERROR loading checkpoint: {e}")
@@ -3363,7 +3382,8 @@ elif TRAINING_MODE == "continue":
         max_lr=max_lr,
         step_size=step_size,
         save_dir=CHECKPOINT_DIR,
-        save_name=PYTORCH_CHECKPOINT_NAME,
+        save_name_latest=PYTORCH_CHECKPOINT_LATEST,
+        save_name_best=PYTORCH_CHECKPOINT_BEST,
         class_weights_list=CLASS_WEIGHT_TUPLE,
         device_str=None,
         preview_gen=val_gen,
@@ -3382,7 +3402,8 @@ elif TRAINING_MODE == "continue":
     print(f"   Final training loss: {history['loss'][-1]:.4f}")
     print(f"   Final validation loss: {history['val_loss'][-1]:.4f}")
     print(f"   Best validation loss: {min(history['val_loss']):.4f}")
-    print(f"   Model checkpoint: {CHECKPOINT_PATH}")
+    print(f"   Latest checkpoint: {CHECKPOINT_PATH_LATEST}")
+    print(f"   Best checkpoint: {CHECKPOINT_PATH_BEST}")
     print("=" * 70 + "\n")
 
 # ================================
@@ -3392,26 +3413,47 @@ elif TRAINING_MODE == "continue":
 print("Training session finished!")
 print(f"   Mode: {TRAINING_MODE.upper()}")
 print(f"   Device: {torch.device('cuda' if torch.cuda.is_available() else 'cpu')}")
-print(f"   Model saved: {os.path.exists(CHECKPOINT_PATH)}")
+print(f"   Latest checkpoint exists: {os.path.exists(CHECKPOINT_PATH_LATEST)}")
+print(f"   Best checkpoint exists: {os.path.exists(CHECKPOINT_PATH_BEST)}")
+print()
+print("To resume training, use the LATEST checkpoint.")
+print("To run inference/testing, use the BEST checkpoint.")
 print()
 
 history_pickle_path=PYTORCH_HISTORY_PATH
 
 """Helper Function: Check Training Status"""
 
-def check_training_status(checkpoint_path=None):
+def check_training_status(checkpoint_path=None, check_both=True):
     """
-    Utility function to inspect a checkpoint file without loading the model.
+    Utility function to inspect checkpoint file(s) without loading the model.
     
     Args:
         checkpoint_path: Path to .pt checkpoint file. 
-                        If None, uses default CHECKPOINT_PATH.
+                        If None, checks both latest and best checkpoints.
+        check_both: If True and checkpoint_path is None, shows both checkpoints.
     
     Returns:
         dict: Dictionary containing checkpoint metadata, or None if error
     """
+    if checkpoint_path is None and check_both:
+        # Check both checkpoints
+        print("=" * 70)
+        print("CHECKPOINT STATUS - BOTH FILES")
+        print("=" * 70)
+        
+        print("\n1. LATEST CHECKPOINT (for resuming training):")
+        print("-" * 70)
+        latest_info = check_training_status(CHECKPOINT_PATH_LATEST, check_both=False)
+        
+        print("\n2. BEST CHECKPOINT (for inference):")
+        print("-" * 70)
+        best_info = check_training_status(CHECKPOINT_PATH_BEST, check_both=False)
+        
+        return {'latest': latest_info, 'best': best_info}
+    
     if checkpoint_path is None:
-        checkpoint_path = CHECKPOINT_PATH
+        checkpoint_path = CHECKPOINT_PATH_LATEST
     
     if not os.path.exists(checkpoint_path):
         print(f"Checkpoint not found: {checkpoint_path}")
