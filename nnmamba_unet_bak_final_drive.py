@@ -432,6 +432,22 @@ patch_size = (height, width, depth, len(windows))   # (Height, Width, Depth)
 # step_size  = (height//4, width//4, depth//2)    # Step size for patch extraction
 step_size  = (height, width, depth//2)    # Step size for patch extraction
 
+# ================================
+# TRAINING CONFIGURATION
+# ================================
+# USER: MODIFY THESE VARIABLES TO CONTROL TRAINING
+
+TRAINING_MODE = "new"  # Options: "new" or "continue"
+# 
+# "new"      - Start training from scratch (epoch 0)
+#              Ignores any existing checkpoints
+#              Creates fresh model weights
+#
+# "continue" - Resume from last checkpoint
+#              Loads model weights, optimizer, scheduler states
+#              Continues from last completed epoch
+#              Falls back to "new" if checkpoint not found
+
 epochs = 2
 patience = 30
 #max_patients = 5
@@ -1707,29 +1723,39 @@ class UNet3DMamba(nn.Module):
         x5 = self.m5(x5_in)
         base = self.base(x5)                      # (N, f512*2, D, H/32, W/32)
 
-        # Decoder path
+        # Decoder path with size matching
         u = F.interpolate(base, scale_factor=(1, 2, 2), mode='trilinear', align_corners=False)
         u = self.up1(u)
+        if u.shape[2:] != x5.shape[2:]:
+            u = F.interpolate(u, size=x5.shape[2:], mode='trilinear', align_corners=False)
         u = torch.cat([u, x5], dim=1)
         u = self.dec1(u)
 
         u = F.interpolate(u, scale_factor=(1, 2, 2), mode='trilinear', align_corners=False)
         u = self.up2(u)
+        if u.shape[2:] != x4.shape[2:]:
+            u = F.interpolate(u, size=x4.shape[2:], mode='trilinear', align_corners=False)
         u = torch.cat([u, x4], dim=1)
         u = self.dec2(u)
 
         u = F.interpolate(u, scale_factor=(1, 2, 2), mode='trilinear', align_corners=False)
         u = self.up3(u)
+        if u.shape[2:] != x3.shape[2:]:
+            u = F.interpolate(u, size=x3.shape[2:], mode='trilinear', align_corners=False)
         u = torch.cat([u, x3], dim=1)
         u = self.dec3(u)
 
         u = F.interpolate(u, scale_factor=(1, 2, 2), mode='trilinear', align_corners=False)
         u = self.up4(u)
+        if u.shape[2:] != x2.shape[2:]:
+            u = F.interpolate(u, size=x2.shape[2:], mode='trilinear', align_corners=False)
         u = torch.cat([u, x2], dim=1)
         u = self.dec4(u)
 
         u = F.interpolate(u, scale_factor=(1, 2, 2), mode='trilinear', align_corners=False)
         u = self.up5(u)
+        if u.shape[2:] != x1.shape[2:]:
+            u = F.interpolate(u, size=x1.shape[2:], mode='trilinear', align_corners=False)
         u = torch.cat([u, x1], dim=1)
         u = self.dec5(u)
 
@@ -2733,7 +2759,8 @@ def build_parser():
 import time
 import copy
 
-PYTORCH_CHECKPOINT_NAME = "best_model_mamba_pytorch.pt"
+PYTORCH_CHECKPOINT_LATEST = "checkpoint_latest.pt"  # For resuming training
+PYTORCH_CHECKPOINT_BEST = "checkpoint_best.pt"      # For inference/evaluation
 PYTORCH_HISTORY_PATH = os.path.join(CHECKPOINT_DIR, "pytorch_training_history.pkl")
 
 def ensure_dir(path: str):
@@ -2797,7 +2824,8 @@ def fit_pytorch_mamba(
     max_lr=1e-2,
     step_size=670,
     save_dir='/content/drive/MyDrive/Unet_checkpoints',
-    save_name=PYTORCH_CHECKPOINT_NAME,
+    save_name_latest=PYTORCH_CHECKPOINT_LATEST,
+    save_name_best=PYTORCH_CHECKPOINT_BEST,
     class_weights_list=CLASS_WEIGHT_TUPLE,
     device_str=None,
     preview_gen=None,
@@ -2846,12 +2874,23 @@ def fit_pytorch_mamba(
         if os.path.exists(resolved_resume):
             print(f"Loading checkpoint from {resolved_resume}")
             checkpoint = torch.load(resolved_resume, map_location=device)
+            
+            # Load the checkpoint (should be latest, not best)
             model.load_state_dict(checkpoint['model_state'])
-            best_state = copy.deepcopy(model.state_dict())
+            
             start_epoch = checkpoint.get('epoch', 0)
             history = checkpoint.get('history', history)
             best_val = checkpoint.get('best_val', best_val)
             no_improve = checkpoint.get('no_improve', 0)
+            
+            # Load best model separately if it exists
+            best_checkpoint_path = os.path.join(save_dir, save_name_best)
+            if os.path.exists(best_checkpoint_path):
+                best_ckpt = torch.load(best_checkpoint_path, map_location=device)
+                best_state = best_ckpt['model_state']
+                print(f"Also loaded best model checkpoint (val_loss={best_val:.4f})")
+            else:
+                best_state = copy.deepcopy(model.state_dict())
 
             opt_state = checkpoint.get('optimizer_state')
             if opt_state is not None:
@@ -2866,14 +2905,19 @@ def fit_pytorch_mamba(
                 scaler.load_state_dict(scaler_state)
 
 
-            print(f"Resumed training at epoch {start_epoch}.")
+            print(f"Loaded checkpoint: {start_epoch} epochs completed. Will resume from epoch {start_epoch + 1}.")
+            print(f"Resuming from LATEST checkpoint (epoch {start_epoch})")
+            print(f"Best model saved separately with val_loss={best_val:.4f}")
         else:
             print(f"Resume checkpoint {resolved_resume} not found; starting from scratch.")
 
     if start_epoch >= num_epochs:
-        print(f"Start epoch {start_epoch} >= requested total {num_epochs}; skipping training.")
+        print(f"Training already complete: {start_epoch} epochs done, target was {num_epochs}.")
         return model, history
 
+    print(f"Starting training loop: epochs {start_epoch + 1} to {num_epochs}")
+    print()
+    
     for epoch in range(start_epoch, num_epochs):
         train_loss, train_dice = train_epoch(
             model,
@@ -2884,9 +2928,9 @@ def fit_pytorch_mamba(
             class_weights,
             scaler=scaler,
         )
-        print(f"[Epoch {epoch+1}] Finished training data pass.")
+        print(f"[Epoch {epoch+1}/{num_epochs}] Finished training data pass.")
         val_loss, val_dice = eval_epoch(model, val_loader, device, class_weights)
-        print(f"[Epoch {epoch+1}] Finished validation data pass.")
+        print(f"[Epoch {epoch+1}/{num_epochs}] Finished validation data pass.")
 
         # Record LR (assume first param group)
         current_lr = scheduler.get_last_lr()[0]
@@ -2903,7 +2947,7 @@ def fit_pytorch_mamba(
             except OSError as exc:
                 print(f"Failed to write history to {history_pickle_path}: {exc}")
 
-        print(f"Epoch {epoch+1}/{num_epochs}  loss={train_loss:.4f}  val_loss={val_loss:.4f}  dice={train_dice:.4f}  val_dice={val_dice:.4f}  lr={current_lr:.6f}")
+        print(f"Epoch {epoch+1}/{num_epochs} COMPLETE - loss={train_loss:.4f} val_loss={val_loss:.4f} dice={train_dice:.4f} val_dice={val_dice:.4f} lr={current_lr:.6f}")
         if preview_batch is not None:
             show_mid_slice_preview(
                 model,
@@ -2914,32 +2958,54 @@ def fit_pytorch_mamba(
                 preview_dir=preview_output_dir,
             )
 
+        # Track best model and save separately
         if val_loss < best_val:
             best_val = val_loss
             best_state = copy.deepcopy(model.state_dict())
-
-            checkpoint_payload = {
+            no_improve = 0
+            
+            # Save BEST checkpoint
+            best_checkpoint = {
                 'model_state': best_state,
                 'epoch': epoch + 1,
                 'history': history,
                 'best_val': best_val,
-                'no_improve': 0,
-                'optimizer_state': optimizer.state_dict(),
-                'scheduler_state': scheduler.state_dict(),
             }
-            if scaler is not None:
-                checkpoint_payload['scaler_state'] = scaler.state_dict()
-            torch.save(checkpoint_payload, os.path.join(save_dir, save_name))
-            no_improve = 0
+            torch.save(best_checkpoint, os.path.join(save_dir, save_name_best))
+            print(f"  NEW BEST MODEL - val_loss improved to {best_val:.4f}")
+            print(f"  Saved to: {save_name_best}")
         else:
             no_improve += 1
-            if no_improve >= patience:
-                print(f"Early stopping at epoch {epoch+1}")
-                break
-        print(f"   epochs without val improvement: {no_improve}")
-        # Load best
-        if best_state is not None:
-            model.load_state_dict(best_state)
+        
+        # Save LATEST checkpoint EVERY epoch (for resuming)
+        latest_checkpoint = {
+            'model_state': model.state_dict(),
+            'epoch': epoch + 1,
+            'history': history,
+            'best_val': best_val,
+            'no_improve': no_improve,
+            'optimizer_state': optimizer.state_dict(),
+            'scheduler_state': scheduler.state_dict(),
+        }
+        if scaler is not None:
+            latest_checkpoint['scaler_state'] = scaler.state_dict()
+        torch.save(latest_checkpoint, os.path.join(save_dir, save_name_latest))
+        print(f"  Latest checkpoint saved (epoch {epoch+1}) -> {save_name_latest}")
+        
+        # Early stopping check
+        if no_improve >= patience:
+            print(f"  Early stopping triggered after {patience} epochs without improvement")
+            break
+            
+        print(f"  Epochs without improvement: {no_improve}/{patience}")
+        print()
+    
+    # After training completes, load the best model (not the last one)
+    if best_state is not None:
+        print()
+        print("Training complete. Loading best model weights (lowest val_loss)...")
+        model.load_state_dict(best_state)
+        print(f"Best model was from an earlier epoch with val_loss={best_val:.4f}")
 
     return model, history
 
@@ -3144,32 +3210,69 @@ def show_mid_slice_preview(
 # if __name__ == "__main__":
 #     main()
 
-"""Continue training"""
+"""Training Execution - User Selectable Mode"""
 
 import os
 import torch
 
-def continue_training_block(
-    additional_epochs=1000,
-    checkpoint_path="/content/drive/MyDrive/Unet_checkpoints/best_model_mamba_pytorch.pt",
-    device_override=None,
-):
-    """
-    Resume the PyTorch training loop for `additional_epochs` more epochs.
-    Assumes train_gen, val_gen, fit_pytorch_mamba, etc. are already defined.
-    """
-    if not os.path.exists(checkpoint_path):
-        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+# ================================
+# TRAINING HYPERPARAMETERS
+# ================================
+NUM_EPOCHS = 10000           # Total epochs for new training
+ADDITIONAL_EPOCHS = 1000     # Additional epochs when continuing (added to saved epoch)
+CHECKPOINT_PATH_LATEST = os.path.join(CHECKPOINT_DIR, PYTORCH_CHECKPOINT_LATEST)
+CHECKPOINT_PATH_BEST = os.path.join(CHECKPOINT_DIR, PYTORCH_CHECKPOINT_BEST)
 
-    ckpt = torch.load(checkpoint_path, map_location="cpu")
-    start_epoch = ckpt.get("epoch", 0)
-    target_epochs = start_epoch + additional_epochs
-    print(f"Resuming from epoch {start_epoch} → {target_epochs}")
+# ================================
+# TRAINING MODE VALIDATION
+# ================================
+if TRAINING_MODE not in ["new", "continue"]:
+    raise ValueError(
+        f"Invalid TRAINING_MODE: '{TRAINING_MODE}'\n"
+        f"Valid options are: 'new' or 'continue'\n"
+        f"Please update the TRAINING_MODE variable at the top of the script."
+    )
 
+# ================================
+# TRAINING EXECUTION LOGIC
+# ================================
+
+print("\n" + "=" * 70)
+print("NEURAL NETWORK TRAINING - ICH SEGMENTATION")
+print("=" * 70)
+
+if TRAINING_MODE == "new":
+    # ============================================================
+    # START NEW TRAINING FROM EPOCH 0
+    # ============================================================
+    
+    print("\nMODE: NEW TRAINING")
+    print("-" * 70)
+    print("- Starting from epoch 0 with fresh model weights")
+    print("- Optimizer and scheduler initialized to default states")
+    print("- Any existing checkpoints will be OVERWRITTEN")
+    print(f"- Training will run for {NUM_EPOCHS} epochs (or until early stopping)")
+    print(f"- Checkpoints will be saved to: {CHECKPOINT_DIR}")
+    print("-" * 70 + "\n")
+    
+    # Check if checkpoint already exists and warn user
+    if os.path.exists(CHECKPOINT_PATH_LATEST) or os.path.exists(CHECKPOINT_PATH_BEST):
+        print("WARNING: Existing checkpoints found!")
+        if os.path.exists(CHECKPOINT_PATH_LATEST):
+            print(f"   Latest: {CHECKPOINT_PATH_LATEST}")
+        if os.path.exists(CHECKPOINT_PATH_BEST):
+            print(f"   Best: {CHECKPOINT_PATH_BEST}")
+        print("   These checkpoints will be OVERWRITTEN during training.")
+        print("   (Continuing execution in 3 seconds...)")
+        import time
+        time.sleep(3)
+        print()
+    
+    # Start new training
     model, history = fit_pytorch_mamba(
         train_gen=train_gen,
         val_gen=val_gen,
-        num_epochs=target_epochs,
+        num_epochs=NUM_EPOCHS,
         patience=patience,
         base_lr=initial_lr,
         max_lr=max_lr,
@@ -3177,20 +3280,241 @@ def continue_training_block(
         save_dir=CHECKPOINT_DIR,
         save_name=PYTORCH_CHECKPOINT_NAME,
         class_weights_list=CLASS_WEIGHT_TUPLE,
-        device_str=device_override,
+        device_str=None,
         preview_gen=val_gen,
-        resume_checkpoint=checkpoint_path,
+        resume_checkpoint=None,  # Critical: None = start from scratch
         history_pickle_path=PYTORCH_HISTORY_PATH,
     )
+    
+    print("\n" + "=" * 70)
+    print("NEW TRAINING COMPLETED")
+    print(f"   Total epochs trained: {len(history['loss'])}")
+    print(f"   Final training loss: {history['loss'][-1]:.4f}")
+    print(f"   Final validation loss: {history['val_loss'][-1]:.4f}")
+    print(f"   Best validation loss: {min(history['val_loss']):.4f}")
+    print(f"   Latest checkpoint: {CHECKPOINT_PATH_LATEST}")
+    print(f"   Best checkpoint: {CHECKPOINT_PATH_BEST}")
+    print("=" * 70 + "\n")
 
-    return model, history
+elif TRAINING_MODE == "continue":
+    # ============================================================
+    # CONTINUE TRAINING FROM CHECKPOINT
+    # ============================================================
+    
+    print("\nMODE: CONTINUE TRAINING")
+    print("-" * 70)
+    
+    # Check if checkpoint exists (look for latest first)
+    if not os.path.exists(CHECKPOINT_PATH_LATEST):
+        print("CHECKPOINT NOT FOUND!")
+        print(f"   Expected location: {CHECKPOINT_PATH_LATEST}")
+        print()
+        print("FALLBACK: Starting NEW TRAINING from epoch 0")
+        print(f"   Training will run for {NUM_EPOCHS} epochs")
+        print("-" * 70 + "\n")
+        
+        # Fallback to new training
+        resume_path = None
+        total_epochs = NUM_EPOCHS
+        start_epoch = 0
+        
+    else:
+        # Load checkpoint to inspect saved state
+        try:
+            print(f"Loading LATEST checkpoint from: {CHECKPOINT_PATH_LATEST}")
+            ckpt = torch.load(CHECKPOINT_PATH_LATEST, map_location="cpu")
+            
+            # Extract checkpoint information
+            start_epoch = ckpt.get("epoch", 0)
+            saved_history = ckpt.get("history", {})
+            best_val = ckpt.get("best_val", None)
+            
+            # Calculate target epochs
+            total_epochs = start_epoch + ADDITIONAL_EPOCHS
+            
+            print(f"Checkpoint loaded successfully!")
+            print()
+            print("CHECKPOINT INFORMATION:")
+            print(f"   - Epochs completed so far: {start_epoch}")
+            print(f"   - Next epoch to train: {start_epoch + 1}")
+            print(f"   - Will train until epoch: {total_epochs}")
+            print(f"   - Additional epochs: {ADDITIONAL_EPOCHS}")
+            print(f"   - Total epochs after completion: {total_epochs}")
+            
+            if best_val is not None:
+                print(f"   - Best validation loss so far: {best_val:.4f}")
+            
+            if 'loss' in saved_history and len(saved_history['loss']) > 0:
+                print(f"   - Last training loss: {saved_history['loss'][-1]:.4f}")
+                print(f"   - Last validation loss: {saved_history['val_loss'][-1]:.4f}")
+            
+            print()
+            print("RESTORING MODEL STATE:")
+            print("   - Model weights")
+            print("   - Optimizer state (SGD with momentum)")
+            print("   - Learning rate scheduler (Cyclic LR)")
+            print("   - Training history")
+            print("   - Early stopping counter")
+            if 'scaler_state' in ckpt:
+                print("   - AMP scaler state")
+            print("-" * 70 + "\n")
+            
+            resume_path = CHECKPOINT_PATH_LATEST
+            
+        except Exception as e:
+            print(f"ERROR loading checkpoint: {e}")
+            print()
+            print("FALLBACK: Starting NEW TRAINING from epoch 0")
+            print(f"   Training will run for {NUM_EPOCHS} epochs")
+            print("-" * 70 + "\n")
+            
+            resume_path = None
+            total_epochs = NUM_EPOCHS
+            start_epoch = 0
+    
+    # Execute training (new or continued depending on checkpoint availability)
+    model, history = fit_pytorch_mamba(
+        train_gen=train_gen,
+        val_gen=val_gen,
+        num_epochs=total_epochs,
+        patience=patience,
+        base_lr=initial_lr,
+        max_lr=max_lr,
+        step_size=step_size,
+        save_dir=CHECKPOINT_DIR,
+        save_name_latest=PYTORCH_CHECKPOINT_LATEST,
+        save_name_best=PYTORCH_CHECKPOINT_BEST,
+        class_weights_list=CLASS_WEIGHT_TUPLE,
+        device_str=None,
+        preview_gen=val_gen,
+        resume_checkpoint=resume_path,  # None if checkpoint missing, else path
+        history_pickle_path=PYTORCH_HISTORY_PATH,
+    )
+    
+    print("\n" + "=" * 70)
+    if resume_path is None:
+        print("NEW TRAINING COMPLETED (fallback mode)")
+    else:
+        print("CONTINUED TRAINING COMPLETED")
+        print(f"   Resumed from epoch: {start_epoch}")
+    
+    print(f"   Total epochs in history: {len(history['loss'])}")
+    print(f"   Final training loss: {history['loss'][-1]:.4f}")
+    print(f"   Final validation loss: {history['val_loss'][-1]:.4f}")
+    print(f"   Best validation loss: {min(history['val_loss']):.4f}")
+    print(f"   Latest checkpoint: {CHECKPOINT_PATH_LATEST}")
+    print(f"   Best checkpoint: {CHECKPOINT_PATH_BEST}")
+    print("=" * 70 + "\n")
+
+# ================================
+# TRAINING COMPLETE
+# ================================
+
+print("Training session finished!")
+print(f"   Mode: {TRAINING_MODE.upper()}")
+print(f"   Device: {torch.device('cuda' if torch.cuda.is_available() else 'cpu')}")
+print(f"   Latest checkpoint exists: {os.path.exists(CHECKPOINT_PATH_LATEST)}")
+print(f"   Best checkpoint exists: {os.path.exists(CHECKPOINT_PATH_BEST)}")
+print()
+print("To resume training, use the LATEST checkpoint.")
+print("To run inference/testing, use the BEST checkpoint.")
+print()
 
 history_pickle_path=PYTORCH_HISTORY_PATH
 
-model, history = continue_training_block(
-    additional_epochs= 1000,
-    checkpoint_path="/content/drive/MyDrive/Unet_checkpoints/best_model_mamba_pytorch.pt",
-)
+"""Helper Function: Check Training Status"""
+
+def check_training_status(checkpoint_path=None, check_both=True):
+    """
+    Utility function to inspect checkpoint file(s) without loading the model.
+    
+    Args:
+        checkpoint_path: Path to .pt checkpoint file. 
+                        If None, checks both latest and best checkpoints.
+        check_both: If True and checkpoint_path is None, shows both checkpoints.
+    
+    Returns:
+        dict: Dictionary containing checkpoint metadata, or None if error
+    """
+    if checkpoint_path is None and check_both:
+        # Check both checkpoints
+        print("=" * 70)
+        print("CHECKPOINT STATUS - BOTH FILES")
+        print("=" * 70)
+        
+        print("\n1. LATEST CHECKPOINT (for resuming training):")
+        print("-" * 70)
+        latest_info = check_training_status(CHECKPOINT_PATH_LATEST, check_both=False)
+        
+        print("\n2. BEST CHECKPOINT (for inference):")
+        print("-" * 70)
+        best_info = check_training_status(CHECKPOINT_PATH_BEST, check_both=False)
+        
+        return {'latest': latest_info, 'best': best_info}
+    
+    if checkpoint_path is None:
+        checkpoint_path = CHECKPOINT_PATH_LATEST
+    
+    if not os.path.exists(checkpoint_path):
+        print(f"Checkpoint not found: {checkpoint_path}")
+        return None
+    
+    try:
+        ckpt = torch.load(checkpoint_path, map_location='cpu')
+        
+        info = {
+            'epoch': ckpt.get('epoch', 0),
+            'best_val': ckpt.get('best_val', None),
+            'no_improve': ckpt.get('no_improve', 0),
+            'has_optimizer': 'optimizer_state' in ckpt,
+            'has_scheduler': 'scheduler_state' in ckpt,
+            'has_scaler': 'scaler_state' in ckpt,
+            'has_history': 'history' in ckpt,
+        }
+        
+        if 'history' in ckpt:
+            hist = ckpt['history']
+            info['total_epochs_trained'] = len(hist.get('loss', []))
+            info['final_train_loss'] = hist['loss'][-1] if 'loss' in hist and len(hist['loss']) > 0 else None
+            info['final_val_loss'] = hist['val_loss'][-1] if 'val_loss' in hist and len(hist['val_loss']) > 0 else None
+            info['best_val_loss_achieved'] = min(hist['val_loss']) if 'val_loss' in hist and len(hist['val_loss']) > 0 else None
+        
+        print("=" * 70)
+        print("CHECKPOINT STATUS")
+        print("=" * 70)
+        print(f"File: {checkpoint_path}")
+        print(f"Last completed epoch: {info['epoch']}")
+        print(f"Best validation loss: {info['best_val']:.4f}" if info['best_val'] else "Best validation loss: N/A")
+        print(f"Epochs without improvement: {info['no_improve']}")
+        print()
+        print("Saved states:")
+        print(f"  - Optimizer: {'Yes' if info['has_optimizer'] else 'No'}")
+        print(f"  - LR Scheduler: {'Yes' if info['has_scheduler'] else 'No'}")
+        print(f"  - AMP Scaler: {'Yes' if info['has_scaler'] else 'No'}")
+        print(f"  - History: {'Yes' if info['has_history'] else 'No'}")
+        
+        if info['has_history']:
+            print()
+            print("Training history:")
+            print(f"  - Total epochs: {info['total_epochs_trained']}")
+            if info['final_train_loss']:
+                print(f"  - Final train loss: {info['final_train_loss']:.4f}")
+            if info['final_val_loss']:
+                print(f"  - Final val loss: {info['final_val_loss']:.4f}")
+            if info['best_val_loss_achieved']:
+                print(f"  - Best val loss ever: {info['best_val_loss_achieved']:.4f}")
+        
+        print("=" * 70)
+        
+        return info
+        
+    except Exception as e:
+        print(f"Error reading checkpoint: {e}")
+        return None
+
+# Example usage:
+# status = check_training_status()
+# status = check_training_status("/path/to/custom/checkpoint.pt")
 
 """ploting"""
 
