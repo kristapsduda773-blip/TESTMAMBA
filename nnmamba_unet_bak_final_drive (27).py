@@ -3765,12 +3765,12 @@ tta_transforms = [
 # plt.axis('off')
 
 # plt.subplot(1, 3, 2)
-# plt.imshow(np.argmax(test_mask[0], axis=-1), cmap='gray')
+# plt.imshow(np.argmax(test_mask[0, :, :, slice_idx, :], axis=-1), cmap='gray')
 # plt.title("Ground Truth")
 # plt.axis('off')
 
 # plt.subplot(1, 3, 3)
-# plt.imshow(np.argmax(prediction[0], axis=-1), cmap='jet')
+# plt.imshow(np.argmax(prediction[0, :, :, slice_idx, :], axis=-1), cmap='jet')
 # plt.title("Predicted Mask (TTA)")
 # plt.axis('off')
 # plt.show()
