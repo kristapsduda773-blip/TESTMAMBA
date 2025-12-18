@@ -2982,8 +2982,8 @@ def fit_pytorch_mamba(
             'scheduler_state': scheduler.state_dict(),
         }
         if scaler is not None:
-            latest_checkpoint['scaler_state'] = scaler.state_dict()
-        torch.save(latest_checkpoint, os.path.join(save_dir, save_name_latest))
+            checkpoint_payload['scaler_state'] = scaler.state_dict()
+        torch.save(checkpoint_payload, os.path.join(save_dir, save_name_latest))
         print(f"  Latest checkpoint saved (epoch {epoch+1}) -> {save_name_latest}")
 
         # Early stopping check
