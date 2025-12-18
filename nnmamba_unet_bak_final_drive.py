@@ -2892,14 +2892,17 @@ def fit_pytorch_mamba(
                 scaler.load_state_dict(scaler_state)
 
 
-            print(f"Resumed training at epoch {start_epoch}.")
+            print(f"Loaded checkpoint: {start_epoch} epochs completed. Will resume from epoch {start_epoch + 1}.")
         else:
             print(f"Resume checkpoint {resolved_resume} not found; starting from scratch.")
 
     if start_epoch >= num_epochs:
-        print(f"Start epoch {start_epoch} >= requested total {num_epochs}; skipping training.")
+        print(f"Training already complete: {start_epoch} epochs done, target was {num_epochs}.")
         return model, history
 
+    print(f"Starting training loop: epochs {start_epoch + 1} to {num_epochs}")
+    print()
+    
     for epoch in range(start_epoch, num_epochs):
         train_loss, train_dice = train_epoch(
             model,
@@ -2910,9 +2913,9 @@ def fit_pytorch_mamba(
             class_weights,
             scaler=scaler,
         )
-        print(f"[Epoch {epoch+1}] Finished training data pass.")
+        print(f"[Epoch {epoch+1}/{num_epochs}] Finished training data pass.")
         val_loss, val_dice = eval_epoch(model, val_loader, device, class_weights)
-        print(f"[Epoch {epoch+1}] Finished validation data pass.")
+        print(f"[Epoch {epoch+1}/{num_epochs}] Finished validation data pass.")
 
         # Record LR (assume first param group)
         current_lr = scheduler.get_last_lr()[0]
@@ -2929,7 +2932,7 @@ def fit_pytorch_mamba(
             except OSError as exc:
                 print(f"Failed to write history to {history_pickle_path}: {exc}")
 
-        print(f"Epoch {epoch+1}/{num_epochs}  loss={train_loss:.4f}  val_loss={val_loss:.4f}  dice={train_dice:.4f}  val_dice={val_dice:.4f}  lr={current_lr:.6f}")
+        print(f"Epoch {epoch+1}/{num_epochs} COMPLETE - loss={train_loss:.4f} val_loss={val_loss:.4f} dice={train_dice:.4f} val_dice={val_dice:.4f} lr={current_lr:.6f}")
         if preview_batch is not None:
             show_mid_slice_preview(
                 model,
@@ -2957,12 +2960,14 @@ def fit_pytorch_mamba(
                 checkpoint_payload['scaler_state'] = scaler.state_dict()
             torch.save(checkpoint_payload, os.path.join(save_dir, save_name))
             no_improve = 0
+            print(f"  Checkpoint saved (best model after epoch {epoch+1})")
         else:
             no_improve += 1
             if no_improve >= patience:
                 print(f"Early stopping at epoch {epoch+1}")
                 break
-        print(f"   epochs without val improvement: {no_improve}")
+        print(f"  Epochs without improvement: {no_improve}/{patience}")
+        print()
         # Load best
         if best_state is not None:
             model.load_state_dict(best_state)
@@ -3290,10 +3295,11 @@ elif TRAINING_MODE == "continue":
             print(f"Checkpoint loaded successfully!")
             print()
             print("CHECKPOINT INFORMATION:")
-            print(f"   - Last completed epoch: {start_epoch}")
-            print(f"   - Training will resume from: epoch {start_epoch + 1}")
-            print(f"   - Target epoch: {total_epochs}")
-            print(f"   - Additional epochs to train: {ADDITIONAL_EPOCHS}")
+            print(f"   - Epochs completed so far: {start_epoch}")
+            print(f"   - Next epoch to train: {start_epoch + 1}")
+            print(f"   - Will train until epoch: {total_epochs}")
+            print(f"   - Additional epochs: {ADDITIONAL_EPOCHS}")
+            print(f"   - Total epochs after completion: {total_epochs}")
             
             if best_val is not None:
                 print(f"   - Best validation loss so far: {best_val:.4f}")
