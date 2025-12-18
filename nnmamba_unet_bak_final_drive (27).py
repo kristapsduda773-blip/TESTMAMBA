@@ -3758,21 +3758,36 @@ tta_transforms = [
 
 # To visualize a prediction (using mid-slice for example):
 # slice_idx = test_img.shape[3] // 2
-# plt.figure(figsize=(15, 5))
+# 
+# # Get the 2D slices and compute argmax
+# gt_slice = np.argmax(test_mask[0, :, :, slice_idx, :], axis=-1)
+# pred_slice = np.argmax(prediction[0, :, :, slice_idx, :], axis=-1)
+# 
+# # Print debug info
+# print(f"Ground truth unique values: {np.unique(gt_slice)}")
+# print(f"Prediction unique values: {np.unique(pred_slice)}")
+# print(f"Ground truth shape: {gt_slice.shape}")
+# print(f"Prediction shape: {pred_slice.shape}")
+# 
+# plt.figure(figsize=(18, 5))
 # plt.subplot(1, 3, 1)
 # plt.imshow(test_img[0, :, :, slice_idx, 0], cmap='gray')
 # plt.title("Test Image")
+# plt.colorbar()
 # plt.axis('off')
-
+# 
 # plt.subplot(1, 3, 2)
-# plt.imshow(np.argmax(test_mask[0, :, :, slice_idx, :], axis=-1), cmap='gray')
-# plt.title("Ground Truth")
+# im2 = plt.imshow(gt_slice, cmap='tab10', vmin=0, vmax=5)
+# plt.title(f"Ground Truth (classes: {np.unique(gt_slice)})")
+# plt.colorbar(im2)
 # plt.axis('off')
-
+# 
 # plt.subplot(1, 3, 3)
-# plt.imshow(np.argmax(prediction[0, :, :, slice_idx, :], axis=-1), cmap='jet')
-# plt.title("Predicted Mask (TTA)")
+# im3 = plt.imshow(pred_slice, cmap='tab10', vmin=0, vmax=5)
+# plt.title(f"Predicted Mask (classes: {np.unique(pred_slice)})")
+# plt.colorbar(im3)
 # plt.axis('off')
+# plt.tight_layout()
 # plt.show()
 
 """# generated:"""
