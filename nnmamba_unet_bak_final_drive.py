@@ -1723,29 +1723,39 @@ class UNet3DMamba(nn.Module):
         x5 = self.m5(x5_in)
         base = self.base(x5)                      # (N, f512*2, D, H/32, W/32)
 
-        # Decoder path
+        # Decoder path with size matching
         u = F.interpolate(base, scale_factor=(1, 2, 2), mode='trilinear', align_corners=False)
         u = self.up1(u)
+        if u.shape[2:] != x5.shape[2:]:
+            u = F.interpolate(u, size=x5.shape[2:], mode='trilinear', align_corners=False)
         u = torch.cat([u, x5], dim=1)
         u = self.dec1(u)
 
         u = F.interpolate(u, scale_factor=(1, 2, 2), mode='trilinear', align_corners=False)
         u = self.up2(u)
+        if u.shape[2:] != x4.shape[2:]:
+            u = F.interpolate(u, size=x4.shape[2:], mode='trilinear', align_corners=False)
         u = torch.cat([u, x4], dim=1)
         u = self.dec2(u)
 
         u = F.interpolate(u, scale_factor=(1, 2, 2), mode='trilinear', align_corners=False)
         u = self.up3(u)
+        if u.shape[2:] != x3.shape[2:]:
+            u = F.interpolate(u, size=x3.shape[2:], mode='trilinear', align_corners=False)
         u = torch.cat([u, x3], dim=1)
         u = self.dec3(u)
 
         u = F.interpolate(u, scale_factor=(1, 2, 2), mode='trilinear', align_corners=False)
         u = self.up4(u)
+        if u.shape[2:] != x2.shape[2:]:
+            u = F.interpolate(u, size=x2.shape[2:], mode='trilinear', align_corners=False)
         u = torch.cat([u, x2], dim=1)
         u = self.dec4(u)
 
         u = F.interpolate(u, scale_factor=(1, 2, 2), mode='trilinear', align_corners=False)
         u = self.up5(u)
+        if u.shape[2:] != x1.shape[2:]:
+            u = F.interpolate(u, size=x1.shape[2:], mode='trilinear', align_corners=False)
         u = torch.cat([u, x1], dim=1)
         u = self.dec5(u)
 
