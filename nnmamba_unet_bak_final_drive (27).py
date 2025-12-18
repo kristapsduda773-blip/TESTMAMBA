@@ -3720,6 +3720,9 @@ def tta_predict_pytorch(model, image, tta_transforms, device='cuda'):
             # Augment the image (numpy operation)
             aug_image = transform(image)
             
+            # Make a contiguous copy to avoid negative stride issues
+            aug_image = np.ascontiguousarray(aug_image)
+            
             # Convert to torch tensor: (B, H, W, D, C) -> (B, C, H, W, D)
             aug_tensor = torch.from_numpy(aug_image).permute(0, 4, 1, 2, 3).float().to(device)
             
@@ -3728,6 +3731,9 @@ def tta_predict_pytorch(model, image, tta_transforms, device='cuda'):
             
             # Convert back to numpy: (B, C, H, W, D) -> (B, H, W, D, C)
             pred_aug = pred_aug_tensor.cpu().numpy().transpose(0, 2, 3, 4, 1)
+            
+            # Make contiguous copy before reversing transformation
+            pred_aug = np.ascontiguousarray(pred_aug)
             
             # Reverse the transformation on the prediction
             pred = transform(pred_aug)
