@@ -2872,8 +2872,17 @@ def fit_pytorch_mamba(
         if os.path.exists(resolved_resume):
             print(f"Loading checkpoint from {resolved_resume}")
             checkpoint = torch.load(resolved_resume, map_location=device)
+            
+            # Load the LAST trained model (not best)
             model.load_state_dict(checkpoint['model_state'])
-            best_state = copy.deepcopy(model.state_dict())
+            
+            # Load the best model separately (for tracking)
+            if 'best_model_state' in checkpoint:
+                best_state = checkpoint['best_model_state']
+            else:
+                # Old checkpoint format - model_state was the best
+                best_state = copy.deepcopy(checkpoint['model_state'])
+            
             start_epoch = checkpoint.get('epoch', 0)
             history = checkpoint.get('history', history)
             best_val = checkpoint.get('best_val', best_val)
@@ -2893,6 +2902,7 @@ def fit_pytorch_mamba(
 
 
             print(f"Loaded checkpoint: {start_epoch} epochs completed. Will resume from epoch {start_epoch + 1}.")
+            print(f"Current model is from epoch {start_epoch}, best model had val_loss={best_val:.4f}")
         else:
             print(f"Resume checkpoint {resolved_resume} not found; starting from scratch.")
 
@@ -2943,34 +2953,45 @@ def fit_pytorch_mamba(
                 preview_dir=preview_output_dir,
             )
 
+        # Track best model
         if val_loss < best_val:
             best_val = val_loss
             best_state = copy.deepcopy(model.state_dict())
-
-            checkpoint_payload = {
-                'model_state': best_state,
-                'epoch': epoch + 1,
-                'history': history,
-                'best_val': best_val,
-                'no_improve': 0,
-                'optimizer_state': optimizer.state_dict(),
-                'scheduler_state': scheduler.state_dict(),
-            }
-            if scaler is not None:
-                checkpoint_payload['scaler_state'] = scaler.state_dict()
-            torch.save(checkpoint_payload, os.path.join(save_dir, save_name))
             no_improve = 0
-            print(f"  Checkpoint saved (best model after epoch {epoch+1})")
+            print(f"  New best model (val_loss improved to {best_val:.4f})")
         else:
             no_improve += 1
-            if no_improve >= patience:
-                print(f"Early stopping at epoch {epoch+1}")
-                break
+        
+        # Save checkpoint EVERY epoch (not just best)
+        checkpoint_payload = {
+            'model_state': model.state_dict(),  # Current model, not best
+            'best_model_state': best_state,      # Also save best model
+            'epoch': epoch + 1,
+            'history': history,
+            'best_val': best_val,
+            'no_improve': no_improve,
+            'optimizer_state': optimizer.state_dict(),
+            'scheduler_state': scheduler.state_dict(),
+        }
+        if scaler is not None:
+            checkpoint_payload['scaler_state'] = scaler.state_dict()
+        torch.save(checkpoint_payload, os.path.join(save_dir, save_name))
+        print(f"  Checkpoint saved (epoch {epoch+1})")
+        
+        # Early stopping check
+        if no_improve >= patience:
+            print(f"  Early stopping triggered after {patience} epochs without improvement")
+            break
+            
         print(f"  Epochs without improvement: {no_improve}/{patience}")
         print()
-        # Load best
-        if best_state is not None:
-            model.load_state_dict(best_state)
+    
+    # After training completes, load the best model (not the last one)
+    if best_state is not None:
+        print()
+        print("Training complete. Loading best model weights (lowest val_loss)...")
+        model.load_state_dict(best_state)
+        print(f"Best model was from an earlier epoch with val_loss={best_val:.4f}")
 
     return model, history
 
