@@ -2982,8 +2982,8 @@ def fit_pytorch_mamba(
             'scheduler_state': scheduler.state_dict(),
         }
         if scaler is not None:
-            latest_checkpoint['scaler_state'] = scaler.state_dict()
-        torch.save(latest_checkpoint, os.path.join(save_dir, save_name_latest))
+            checkpoint_payload['scaler_state'] = scaler.state_dict()
+        torch.save(checkpoint_payload, os.path.join(save_dir, save_name_latest))
         print(f"  Latest checkpoint saved (epoch {epoch+1}) -> {save_name_latest}")
 
         # Early stopping check
@@ -3695,28 +3695,49 @@ plot_history_curves(history, title_prefix="PyTorch Training")
 
 """## Test"""
 
-def tta_predict(model, image, tta_transforms):
+def tta_predict_pytorch(model, image, tta_transforms, device='cuda'):
     """
-    Applies test-time augmentation (TTA) to a single test image.
+    Applies test-time augmentation (TTA) to a single test image (PyTorch version).
 
     Parameters:
-      model         : The trained model.
-      image         : Input image batch (e.g., shape (B, H, W, D, C)).
-      tta_transforms: List of self-inverse transform functions.
+      model         : The trained PyTorch model.
+      image         : Input image batch as numpy array (e.g., shape (B, H, W, D, C)).
+      tta_transforms: List of self-inverse transform functions (operate on numpy arrays).
+      device        : Device to run inference on ('cuda' or 'cpu').
 
     Returns:
-      Averaged prediction from all augmented versions.
+      Averaged prediction from all augmented versions (numpy array).
     """
+    import torch
+    model.eval()
     tta_preds = []
+    
+    device = torch.device(device if torch.cuda.is_available() else 'cpu')
+    model = model.to(device)
 
-    for transform in tta_transforms:
-        # Augment the image
-        aug_image = transform(image)
-        # Predict on the augmented image
-        pred_aug = model.predict(aug_image)
-        # Reverse the transformation on the prediction
-        pred = transform(pred_aug)
-        tta_preds.append(pred)
+    with torch.no_grad():
+        for transform in tta_transforms:
+            # Augment the image (numpy operation)
+            aug_image = transform(image)
+            
+            # Make a contiguous copy to avoid negative stride issues
+            aug_image = np.ascontiguousarray(aug_image)
+            
+            # Convert to torch tensor: (B, H, W, D, C) -> (B, C, H, W, D)
+            aug_tensor = torch.from_numpy(aug_image).permute(0, 4, 1, 2, 3).float().to(device)
+            
+            # Predict on the augmented image
+            pred_aug_tensor = model(aug_tensor)
+            
+            # Convert back to numpy: (B, C, H, W, D) -> (B, H, W, D, C)
+            pred_aug = pred_aug_tensor.cpu().numpy().transpose(0, 2, 3, 4, 1)
+            
+            # Make contiguous copy before reversing transformation
+            pred_aug = np.ascontiguousarray(pred_aug)
+            
+            # Reverse the transformation on the prediction
+            pred = transform(pred_aug)
+            tta_preds.append(pred)
 
     # Average predictions from all transforms
     averaged_pred = np.mean(tta_preds, axis=0)
@@ -3730,27 +3751,57 @@ tta_transforms = [
     lambda x: np.flip(np.flip(x, axis=1), axis=2) # both flips
 ]
 
-# Assuming test_img is your input test image batch:
-# test_img, _ = test_gen[i]   # Get a test batch from your generator
-# prediction = tta_predict(model_for_pred, test_img, tta_transforms)
+# To use TTA for prediction with PyTorch model:
+# test_img, test_mask = test_gen[0]   # Get a test batch from your generator
+# device = 'cuda' if torch.cuda.is_available() else 'cpu'
+# prediction = tta_predict_pytorch(model, test_img, tta_transforms, device=device)
 
-# To visualize a prediction (using mid-slice for example):
-slice_idx = test_img.shape[3] // 2
-plt.figure(figsize=(15, 5))
-plt.subplot(1, 3, 1)
-plt.imshow(test_img[0, :, :, slice_idx, 0], cmap='gray')
-plt.title("Test Image")
-plt.axis('off')
-
-plt.subplot(1, 3, 2)
-plt.imshow(np.argmax(test_mask[0], axis=-1), cmap='gray')
-plt.title("Ground Truth")
-plt.axis('off')
-
-plt.subplot(1, 3, 3)
-plt.imshow(np.argmax(prediction[0], axis=-1), cmap='jet')
-plt.title("Predicted Mask (TTA)")
-plt.axis('off')
-plt.show()
+# To visualize a prediction - find a slice with actual segmentation data:
+# depth = test_img.shape[3]
+# 
+# # Find a slice with non-zero classes (not just background)
+# best_slice_idx = depth // 2  # default to middle
+# max_nonzero_pixels = 0
+# 
+# print("Searching for best slice with segmentation data...")
+# for slice_idx in range(depth):
+#     gt_slice = np.argmax(test_mask[0, :, :, slice_idx, :], axis=-1)
+#     nonzero_count = np.sum(gt_slice > 0)  # Count non-background pixels
+#     if nonzero_count > max_nonzero_pixels:
+#         max_nonzero_pixels = nonzero_count
+#         best_slice_idx = slice_idx
+# 
+# print(f"Best slice: {best_slice_idx}/{depth} with {max_nonzero_pixels} non-background pixels")
+# 
+# # Get the 2D slices and compute argmax for the best slice
+# gt_slice = np.argmax(test_mask[0, :, :, best_slice_idx, :], axis=-1)
+# pred_slice = np.argmax(prediction[0, :, :, best_slice_idx, :], axis=-1)
+# 
+# # Print debug info
+# print(f"Ground truth unique values: {np.unique(gt_slice)} (counts: {np.bincount(gt_slice.flatten())})")
+# print(f"Prediction unique values: {np.unique(pred_slice)} (counts: {np.bincount(pred_slice.flatten())})")
+# print(f"Ground truth shape: {gt_slice.shape}")
+# print(f"Prediction shape: {pred_slice.shape}")
+# 
+# plt.figure(figsize=(18, 5))
+# plt.subplot(1, 3, 1)
+# plt.imshow(test_img[0, :, :, best_slice_idx, 0], cmap='gray')
+# plt.title(f"Test Image (slice {best_slice_idx})")
+# plt.colorbar()
+# plt.axis('off')
+# 
+# plt.subplot(1, 3, 2)
+# im2 = plt.imshow(gt_slice, cmap='tab10', vmin=0, vmax=5)
+# plt.title(f"Ground Truth\nClasses: {np.unique(gt_slice)}")
+# plt.colorbar(im2)
+# plt.axis('off')
+# 
+# plt.subplot(1, 3, 3)
+# im3 = plt.imshow(pred_slice, cmap='tab10', vmin=0, vmax=5)
+# plt.title(f"Predicted Mask (TTA)\nClasses: {np.unique(pred_slice)}")
+# plt.colorbar(im3)
+# plt.axis('off')
+# plt.tight_layout()
+# plt.show()
 
 """# generated:"""
